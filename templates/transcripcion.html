@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transcriptor de Consultas - Chinoin AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="CHINOIN Logo" class="logo">
+            <div>
+                <h1>Transcriptor de Consultas (IA)</h1>
+                <p>Convierte el diálogo en notas clínicas estructuradas</p>
+            </div>
+        </div>
+    </header>
+    <nav>
+        <a href="/">Dashboard</a>
+        <a href="/transcripcion" class="active">Transcriptor de Consultas (IA)</a>
+        <a href="/asesoria">Asistente Legal/Contable</a>
+    </nav>
+    <main>
+        <div class="card">
+            <div class="legal-note">
+                ⚠️ <strong>Aviso Legal:</strong> Confirme haber obtenido el <strong>Consentimiento Informado</strong> (verbal o escrito) del paciente para grabar la consulta con fines de documentación médica, según NOM-004-SSA3-2012.
+            </div>
+            
+            <h3>📝 Transcripción del Diálogo de Consulta</h3>
+            <p>Pegue aquí la transcripción completa de la conversación entre médico y paciente:</p>
+            <textarea id="consulta_texto" rows="12" placeholder="Ejemplo:
+
+Médico: Buenos días Sra. Pérez, ¿qué la trae por aquí hoy?
+Paciente: Doctor, me duele mucho la garganta y tengo fiebre desde hace dos días. La temperatura llegó hasta 38.5 grados.
+Médico: Entiendo. ¿Algún otro síntoma? ¿Tos, dolor de cabeza?
+Paciente: Sí, me duele la cabeza y me siento muy cansada.
+Médico: Déjeme revisarla. Abra la boca por favor... Veo enrojecimiento en faringe sin placas. Los ganglios están un poco inflamados. Temperatura actual 38.2°C.
+Paciente: ¿Es algo grave doctor?
+Médico: No se preocupe, parece una faringitis viral. Le voy a recetar paracetamol 500mg cada 8 horas por 3 días para la fiebre y el dolor. Muchos líquidos y reposo. Si en 3 días no mejora, regrese.
+Paciente: Perfecto doctor, muchas gracias."></textarea>
+            
+            <button class="button primary" onclick="procesarConsulta()" id="btnProcesar">
+                <span id="btnTexto">🤖 Procesar con IA Gemini</span>
+                <span id="btnLoading" class="hidden">⏳ Procesando...</span>
+            </button>
+        </div>
+
+        <div id="resultados_ia" class="card hidden">
+            <h3>✅ Resultados del Análisis IA</h3>
+            
+            <div class="resultado-section">
+                <h4>📋 1. Notas Clínicas SOAP (Listas para copiar y pegar)</h4>
+                <pre id="soap_output" class="soap-output"></pre>
+                <button class="button secondary small" onclick="copiarTexto('soap_output')">📋 Copiar SOAP</button>
+            </div>
+            
+            <div class="resultado-section">
+                <h4>🔍 2. Información Crítica</h4>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <strong>Diagnóstico Sugerido:</strong>
+                        <p id="diagnostico"></p>
+                    </div>
+                    <div class="info-item">
+                        <strong>Plan de Tratamiento:</strong>
+                        <p id="plan"></p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="resultado-section">
+                <h4>✓ 3. Revisión de Cumplimiento Médico-Legal</h4>
+                <p id="cumplimiento" class="cumplimiento-badge"></p>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        async function procesarConsulta() {
+            const texto = document.getElementById('consulta_texto').value;
+            if (!texto.trim()) {
+                alert("Por favor, ingrese el texto de la consulta para procesar.");
+                return;
+            }
+
+            const btnProcesar = document.getElementById('btnProcesar');
+            const btnTexto = document.getElementById('btnTexto');
+            const btnLoading = document.getElementById('btnLoading');
+            
+            btnProcesar.disabled = true;
+            btnTexto.classList.add('hidden');
+            btnLoading.classList.remove('hidden');
+
+            try {
+                const response = await fetch('/procesar_consulta', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ consulta_texto: texto })
+                });
+
+                const data = await response.json();
+                
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+                
+                document.getElementById('soap_output').textContent = data.soap_output;
+                document.getElementById('diagnostico').textContent = data.diagnostico;
+                document.getElementById('plan').textContent = data.plan;
+                document.getElementById('cumplimiento').textContent = data.cumplimiento;
+                
+                document.getElementById('resultados_ia').classList.remove('hidden');
+                document.getElementById('resultados_ia').scrollIntoView({ behavior: 'smooth' });
+                
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Ocurrió un error al procesar la consulta. Por favor, intente nuevamente.');
+            } finally {
+                btnProcesar.disabled = false;
+                btnTexto.classList.remove('hidden');
+                btnLoading.classList.add('hidden');
+            }
+        }
+
+        function copiarTexto(elementId) {
+            const texto = document.getElementById(elementId).textContent;
+            navigator.clipboard.writeText(texto).then(() => {
+                alert('✅ Texto copiado al portapapeles');
+            }).catch(err => {
+                console.error('Error al copiar:', err);
+            });
+        }
+    </script>
+    <footer>
+        <p>&copy; 2025 CHINOIN® - Kit de herramientas gratuito para médicos | Powered by Gemini AI</p>
+    </footer>
+</body>
+</html>

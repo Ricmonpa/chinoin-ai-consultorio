@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chinoin AI Consultorio Manager</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="CHINOIN Logo" class="logo">
+            <div>
+                <h1>Chinoin AI Consultorio Manager</h1>
+                <p>Dashboard de Gestión Médica</p>
+            </div>
+        </div>
+    </header>
+    <nav>
+        <a href="/" class="active">Dashboard</a>
+        <a href="/transcripcion">Transcriptor de Consultas (IA)</a>
+        <a href="/asesoria">Asistente Legal/Contable</a>
+    </nav>
+    <main>
+        <h2>Bienvenido, Dr./Dra.</h2>
+        
+        <div class="card highlight">
+            <h3>🚀 ¡Empieza Ya!</h3>
+            <p>Automatiza tus notas clínicas en segundos con inteligencia artificial de última generación.</p>
+            <a href="/transcripcion" class="button primary">Iniciar Transcripción de Consulta</a>
+        </div>
+        
+        <div class="dashboard-grid">
+            <div class="card alert">
+                <h3>⚠️ Alertas de Cumplimiento</h3>
+                <ul class="alert-list">
+                    <li><strong>(2) Facturas pendientes de Clasificar</strong></li>
+                    <li><strong>(1) Aviso de Privacidad desactualizado</strong></li>
+                    <li><strong>(1) Consentimiento pendiente de revisión</strong></li>
+                </ul>
+            </div>
+
+            <div class="card stats">
+                <h3>📊 Resumen Financiero Rápido</h3>
+                <div class="stat-item">
+                    <span class="stat-label">Ingresos del Mes:</span>
+                    <span class="stat-value">$45,000 MXN</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Gastos Deducibles:</span>
+                    <span class="stat-value">95%</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Consultas Procesadas:</span>
+                    <span class="stat-value">{{ total_consultas }}</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card info">
+            <h3>🔗 Acceso al Portal Chinoin</h3>
+            <p>Cursos de actualización médica, eventos exclusivos y novedades de la línea farmacéutica CHINOIN.</p>
+            <a href="https://emc.chinoin.com/es/portal-home-public" target="_blank" class="button secondary">Ir al Portal</a>
+        </div>
+
+        <div class="card features">
+            <h3>✨ Funcionalidades del Kit</h3>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <h4>🎤 Transcriptor IA</h4>
+                    <p>Convierte diálogos de consultas en notas SOAP estructuradas automáticamente</p>
+                </div>
+                <div class="feature-item">
+                    <h4>⚖️ Asesoría Legal</h4>
+                    <p>Respuestas instantáneas sobre CFDI, ISR, IVA y cumplimiento normativo</p>
+                </div>
+                <div class="feature-item">
+                    <h4>📋 Cumplimiento NOM</h4>
+                    <p>Verificación automática de consentimientos y avisos de privacidad</p>
+                </div>
+                <div class="feature-item">
+                    <h4>💼 Gestión Fiscal</h4>
+                    <p>Optimización de deducciones y control de gastos médicos</p>
+                </div>
+            </div>
+        </div>
+    </main>
+    <footer>
+        <p>&copy; 2025 CHINOIN® - Kit de herramientas gratuito para médicos | Powered by Gemini AI</p>
+    </footer>
+</body>
+</html>
