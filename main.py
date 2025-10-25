@@ -1,10 +1,16 @@
 import os
+import sys
 from flask import Flask, render_template, request, jsonify
 from google import genai
 from google.genai import types
 
+if not os.environ.get('SESSION_SECRET'):
+    print("ERROR: SESSION_SECRET no está configurado. Por seguridad, es obligatorio.")
+    print("Por favor configura SESSION_SECRET en Secrets de Replit.")
+    sys.exit(1)
+
 app = Flask(__name__)
-app.secret_key = os.environ.get('SESSION_SECRET', 'chinoin-dev-secret-key')
+app.secret_key = os.environ.get('SESSION_SECRET')
 
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
@@ -109,26 +115,37 @@ Responde en formato JSON con esta estructura:
             return jsonify({"error": "No se recibió respuesta de la IA."}), 500
         resultado = json.loads(response.text)
         
-        soap_formateado = f"""S (Subjetivo): {resultado['soap']['subjetivo']}
+        soap_data = resultado.get('soap', {})
+        subjetivo = soap_data.get('subjetivo', 'No disponible')
+        objetivo = soap_data.get('objetivo', 'No disponible')
+        analisis = soap_data.get('analisis', 'No disponible')
+        plan = soap_data.get('plan', 'No disponible')
+        
+        soap_formateado = f"""S (Subjetivo): {subjetivo}
 
-O (Objetivo): {resultado['soap']['objetivo']}
+O (Objetivo): {objetivo}
 
-A (Análisis): {resultado['soap']['analisis']}
+A (Análisis): {analisis}
 
-P (Plan): {resultado['soap']['plan']}"""
+P (Plan): {plan}"""
+        
+        diagnostico = resultado.get('diagnostico', 'No especificado')
+        tratamiento = resultado.get('tratamiento', 'No especificado')
+        cumplimiento_data = resultado.get('cumplimiento', {})
+        cumplimiento_estado = cumplimiento_data.get('estado', 'Pendiente de revisar')
         
         consultas_memoria.append({
             'texto': consulta_texto,
             'soap': soap_formateado,
-            'diagnostico': resultado['diagnostico'],
-            'tratamiento': resultado['tratamiento']
+            'diagnostico': diagnostico,
+            'tratamiento': tratamiento
         })
         
         return jsonify({
             "soap_output": soap_formateado,
-            "diagnostico": resultado['diagnostico'],
-            "plan": resultado['tratamiento'],
-            "cumplimiento": resultado['cumplimiento']['estado']
+            "diagnostico": diagnostico,
+            "plan": tratamiento,
+            "cumplimiento": cumplimiento_estado
         })
         
     except Exception as e:
