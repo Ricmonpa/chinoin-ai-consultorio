@@ -4,12 +4,15 @@ Kit de herramientas de gestión médica con inteligencia artificial para médico
 
 ## 🚀 Características Principales
 
-### 1. 🎤 Transcriptor de Consultas (IA)
-Convierte automáticamente las conversaciones médico-paciente en **notas clínicas SOAP** estructuradas:
-- **S** (Subjetivo): Síntomas reportados por el paciente
-- **O** (Objetivo): Hallazgos de la exploración física
-- **A** (Análisis): Diagnóstico probable
-- **P** (Plan): Tratamiento, medicamentos y seguimiento
+### 1. 🎤 Transcriptor de Consultas (IA) - CON GRABACIÓN DE AUDIO REAL
+**¡Graba tu consulta con un clic!** El sistema automáticamente:
+1. **Graba el audio** → Haz clic en el botón del micrófono para grabar la consulta
+2. **Transcribe con IA** → Gemini convierte el audio a texto automáticamente
+3. **Genera notas SOAP** → Crea notas clínicas estructuradas:
+   - **S** (Subjetivo): Síntomas reportados por el paciente
+   - **O** (Objetivo): Hallazgos de la exploración física
+   - **A** (Análisis): Diagnóstico probable
+   - **P** (Plan): Tratamiento, medicamentos y seguimiento
 
 ### 2. ⚖️ Asistente Legal/Contable
 Responde preguntas sobre normativas fiscales mexicanas:
@@ -33,19 +36,17 @@ Responde preguntas sobre normativas fiscales mexicanas:
 
 ## 📖 Cómo Usar
 
-1. **Accede al Dashboard** → Haz clic en "Iniciar Transcripción de Consulta"
-2. **Pega el diálogo** → Copia la conversación entre médico y paciente
-3. **Procesa con IA** → La inteligencia artificial genera las notas SOAP automáticamente
-4. **Copia las notas** → Integra las notas a tu sistema de expedientes
+1. **Accede al Transcriptor** → Haz clic en "Iniciar Transcripción de Consulta"
+2. **Graba la consulta** → Haz clic en el botón del micrófono (🎤) para iniciar la grabación
+3. **Detén cuando termines** → Haz clic en ⏹️ para parar y procesar
+4. **¡Listo!** → La IA transcribe el audio, genera notas SOAP automáticamente
+5. **Copia las notas** → Integra las notas a tu sistema de expedientes
 
-### Ejemplo de Diálogo:
-
-```
-Médico: Buenos días Sra. Pérez, ¿qué la trae por aquí hoy?
-Paciente: Doctor, me duele mucho la garganta y tengo fiebre desde hace dos días.
-Médico: Déjeme revisarla. Abra la boca por favor...
-[...]
-```
+### Flujo Real:
+- **Médico hace clic en grabar** → El navegador pide permiso para usar el micrófono
+- **Conversa normalmente** → La consulta se graba en tiempo real con visualización de audio
+- **Detiene la grabación** → El audio se envía a Gemini para transcripción
+- **Recibe transcripción + notas SOAP** → Todo aparece automáticamente en pantalla
 
 ## ⚠️ Importante
 
