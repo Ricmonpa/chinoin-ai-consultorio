@@ -47,6 +47,8 @@ def vista_transcripcion():
 
 @app.route('/procesar_consulta', methods=['POST'])
 def procesar_consulta():
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
     consulta_texto = request.json.get('consulta_texto', '')
     
     if not consulta_texto:
@@ -103,6 +105,8 @@ Responde en formato JSON con esta estructura:
         )
         
         import json
+        if not response.text:
+            return jsonify({"error": "No se recibió respuesta de la IA."}), 500
         resultado = json.loads(response.text)
         
         soap_formateado = f"""S (Subjetivo): {resultado['soap']['subjetivo']}
@@ -136,6 +140,8 @@ def vista_asesoria():
 
 @app.route('/consultar_norma', methods=['POST'])
 def consultar_norma():
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
     pregunta = request.json.get('pregunta', '')
     
     if not pregunta:
