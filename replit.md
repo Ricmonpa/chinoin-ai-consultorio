@@ -44,12 +44,20 @@ Kit de herramientas de gestión médica con inteligencia artificial desarrollado
 
 ## Funcionalidades Principales
 
-### 1. 🎤 Transcriptor de Consultas (IA) - Feature Estrella
+### 1. 🎤 Transcriptor de Consultas (IA) - Feature Estrella ✅ CON GRABACIÓN DE AUDIO REAL
 **Ruta:** `/transcripcion`
 
-- **Función:** Convierte diálogos completos de consultas médicas en notas clínicas estructuradas
+- **Función:** ¡GRABA consultas médicas con un clic y genera notas SOAP automáticamente!
+- **Tecnología:** MediaRecorder API + Gemini 2.0 Flash Exp
+- **Flujo completo:**
+  1. Médico hace clic en el micrófono 🎤
+  2. Audio se graba en tiempo real (con visualización y timer)
+  3. Al detener, el audio se envía a Gemini
+  4. Gemini transcribe el audio a texto
+  5. Gemini genera notas SOAP estructuradas
 - **Formato de salida:** SOAP (Subjetivo, Objetivo, Análisis, Plan)
-- **IA:** Gemini analiza el texto y extrae:
+- **Extrae automáticamente:**
+  - Transcripción completa de la conversación
   - Síntomas reportados por el paciente
   - Hallazgos de exploración física
   - Diagnóstico sugerido
@@ -94,10 +102,12 @@ Kit de herramientas de gestión médica con inteligencia artificial desarrollado
 ## Flujo de Uso Típico
 
 1. **Médico accede al dashboard** → Ve alertas y resumen
-2. **Inicia transcripción de consulta** → Pega el diálogo médico-paciente
-3. **IA procesa con Gemini** → Genera notas SOAP automáticamente
-4. **Médico copia las notas** → Las integra a su sistema de expedientes
-5. **Consulta dudas fiscales** → Asistente responde sobre CFDI, deducciones, etc.
+2. **Inicia transcripción de consulta** → Hace clic en el botón 🎤 para grabar
+3. **Graba la consulta en tiempo real** → Conversa normalmente con el paciente
+4. **Detiene la grabación** → IA transcribe y procesa con Gemini automáticamente
+5. **Recibe transcripción + notas SOAP** → Todo aparece en pantalla en segundos
+6. **Médico copia las notas** → Las integra a su sistema de expedientes
+7. **Consulta dudas fiscales** → Asistente responde sobre CFDI, deducciones, etc.
 
 ## Configuración de Secrets
 
@@ -132,6 +142,19 @@ Renderiza la interfaz del transcriptor
 
 ### GET `/asesoria`
 Renderiza la interfaz del asistente legal
+
+### POST `/api/transcribir_audio`
+**Body:** FormData con archivo de audio (WebM format)
+**Respuesta:**
+```json
+{
+  "transcription": "Médico: Buenos días... Paciente: ...",
+  "soap_output": "S (Subjetivo): ...\nO (Objetivo): ...",
+  "diagnostico": "Faringitis viral",
+  "plan": "Paracetamol 500mg...",
+  "cumplimiento": "Verificado"
+}
+```
 
 ### POST `/consultar_norma`
 **Body JSON:**
