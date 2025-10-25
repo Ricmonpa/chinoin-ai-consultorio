@@ -151,6 +151,139 @@ P (Plan): {plan}"""
     except Exception as e:
         return jsonify({"error": f"Error al procesar con IA: {str(e)}"}), 500
 
+@app.route('/api/transcribir_audio', methods=['POST'])
+def transcribir_audio():
+    if 'audio' not in request.files:
+        return jsonify({"error": "No se recibió archivo de audio."}), 400
+    
+    audio_file = request.files['audio']
+    
+    if audio_file.filename == '':
+        return jsonify({"error": "Archivo de audio vacío."}), 400
+    
+    try:
+        audio_bytes = audio_file.read()
+        
+        transcription_prompt = """Transcribe el siguiente audio de una consulta médica palabra por palabra. 
+El audio contiene una conversación entre un médico y un paciente.
+Formatea la transcripción claramente indicando quién habla en cada momento.
+Ejemplo:
+Médico: [texto]
+Paciente: [texto]
+
+Transcribe TODO el contenido del audio con precisión."""
+
+        transcription_response = client.models.generate_content(
+            model="gemini-2.0-flash-exp",
+            contents=[
+                types.Part.from_bytes(
+                    data=audio_bytes,
+                    mime_type="audio/webm",
+                ),
+                transcription_prompt
+            ]
+        )
+        
+        if not transcription_response.text:
+            return jsonify({"error": "No se pudo transcribir el audio."}), 500
+        
+        transcripcion = transcription_response.text
+        
+        soap_prompt = f"""Eres un asistente médico experto que analiza transcripciones de consultas médicas.
+
+Analiza la siguiente transcripción de una consulta médica y genera:
+
+1. NOTAS SOAP (formato estructurado):
+   - S (Subjetivo): Qué reporta el paciente (síntomas, molestias, historia)
+   - O (Objetivo): Hallazgos de la exploración física, signos vitales
+   - A (Análisis): Diagnóstico probable o diagnósticos diferenciales
+   - P (Plan): Tratamiento, medicamentos (con dosis), estudios, seguimiento
+
+2. DIAGNÓSTICO SUGERIDO: El diagnóstico más probable basado en la información
+
+3. PLAN DE TRATAMIENTO: Resumen del tratamiento con medicamentos y dosis específicas
+
+4. VERIFICACIÓN DE CUMPLIMIENTO: Indica si se mencionó:
+   - Consentimiento informado (para procedimientos)
+   - Explicación de riesgos
+   - Instrucciones claras al paciente
+
+TRANSCRIPCIÓN DE LA CONSULTA:
+{transcripcion}
+
+Responde en formato JSON con esta estructura:
+{{
+  "soap": {{
+    "subjetivo": "texto",
+    "objetivo": "texto",
+    "analisis": "texto",
+    "plan": "texto"
+  }},
+  "diagnostico": "texto",
+  "tratamiento": "texto",
+  "cumplimiento": {{
+    "consentimiento": "mencionado/no mencionado",
+    "riesgos_explicados": "si/no",
+    "instrucciones_claras": "si/no",
+    "estado": "Verificado/Pendiente de revisar"
+  }}
+}}
+"""
+        
+        soap_response = client.models.generate_content(
+            model="gemini-2.0-flash-exp",
+            contents=soap_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        
+        import json
+        if not soap_response.text:
+            return jsonify({"error": "No se pudo generar notas SOAP."}), 500
+        
+        resultado = json.loads(soap_response.text)
+        
+        soap_data = resultado.get('soap', {})
+        subjetivo = soap_data.get('subjetivo', 'No disponible')
+        objetivo = soap_data.get('objetivo', 'No disponible')
+        analisis = soap_data.get('analisis', 'No disponible')
+        plan = soap_data.get('plan', 'No disponible')
+        
+        soap_formateado = f"""S (Subjetivo): {subjetivo}
+
+O (Objetivo): {objetivo}
+
+A (Análisis): {analisis}
+
+P (Plan): {plan}"""
+        
+        diagnostico = resultado.get('diagnostico', 'No especificado')
+        tratamiento = resultado.get('tratamiento', 'No especificado')
+        cumplimiento_data = resultado.get('cumplimiento', {})
+        cumplimiento_estado = cumplimiento_data.get('estado', 'Pendiente de revisar')
+        
+        consultas_memoria.append({
+            'audio': True,
+            'transcripcion': transcripcion,
+            'soap': soap_formateado,
+            'diagnostico': diagnostico,
+            'tratamiento': tratamiento
+        })
+        
+        return jsonify({
+            "transcription": transcripcion,
+            "soap_output": soap_formateado,
+            "diagnostico": diagnostico,
+            "plan": tratamiento,
+            "cumplimiento": cumplimiento_estado
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Error al procesar audio: {str(e)}"}), 500
+
 @app.route('/asesoria')
 def vista_asesoria():
     return render_template('asesoria.html')
