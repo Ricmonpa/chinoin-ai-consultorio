@@ -5,6 +5,76 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Transcriptor de Consultas - Chinoin AI</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .recorder-container {
+            text-align: center;
+            padding: 30px;
+            background: linear-gradient(135deg, #fff5f2 0%, #ffffff 100%);
+            border-radius: 12px;
+            margin: 20px 0;
+        }
+        .recorder-button {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: none;
+            font-size: 3em;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+        .recorder-button:hover {
+            transform: scale(1.05);
+        }
+        .recorder-button.recording {
+            background: linear-gradient(135deg, #ff0000 0%, #cc0000 100%);
+            animation: pulse 1.5s infinite;
+        }
+        .recorder-button.ready {
+            background: linear-gradient(135deg, #FF6B4A 0%, #ff8566 100%);
+            color: white;
+        }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7); }
+            50% { box-shadow: 0 0 0 20px rgba(255, 0, 0, 0); }
+        }
+        .recorder-status {
+            margin-top: 20px;
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #FF6B4A;
+        }
+        .recorder-timer {
+            font-size: 2em;
+            font-weight: bold;
+            color: #1a1a1a;
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+        }
+        .audio-visualizer {
+            margin: 20px auto;
+            width: 100%;
+            max-width: 600px;
+            height: 100px;
+            background: #2d2d2d;
+            border-radius: 8px;
+            display: none;
+        }
+        .audio-visualizer.active {
+            display: block;
+        }
+        .transcript-preview {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border-left: 4px solid #FF6B4A;
+            display: none;
+        }
+        .transcript-preview.active {
+            display: block;
+        }
+    </style>
 </head>
 <body>
     <header>
@@ -12,7 +82,7 @@
             <img src="{{ url_for('static', filename='images/logo.png') }}" alt="CHINOIN Logo" class="logo">
             <div>
                 <h1>Transcriptor de Consultas (IA)</h1>
-                <p>Convierte el diálogo en notas clínicas estructuradas</p>
+                <p>Graba la consulta y obtén notas clínicas automáticamente</p>
             </div>
         </div>
     </header>
@@ -27,36 +97,41 @@
                 ⚠️ <strong>Aviso Legal:</strong> Confirme haber obtenido el <strong>Consentimiento Informado</strong> (verbal o escrito) del paciente para grabar la consulta con fines de documentación médica, según NOM-004-SSA3-2012.
             </div>
             
-            <h3>📝 Transcripción del Diálogo de Consulta</h3>
-            <p>Pegue aquí la transcripción completa de la conversación entre médico y paciente:</p>
-            <textarea id="consulta_texto" rows="12" placeholder="Ejemplo:
-
-Médico: Buenos días Sra. Pérez, ¿qué la trae por aquí hoy?
-Paciente: Doctor, me duele mucho la garganta y tengo fiebre desde hace dos días. La temperatura llegó hasta 38.5 grados.
-Médico: Entiendo. ¿Algún otro síntoma? ¿Tos, dolor de cabeza?
-Paciente: Sí, me duele la cabeza y me siento muy cansada.
-Médico: Déjeme revisarla. Abra la boca por favor... Veo enrojecimiento en faringe sin placas. Los ganglios están un poco inflamados. Temperatura actual 38.2°C.
-Paciente: ¿Es algo grave doctor?
-Médico: No se preocupe, parece una faringitis viral. Le voy a recetar paracetamol 500mg cada 8 horas por 3 días para la fiebre y el dolor. Muchos líquidos y reposo. Si en 3 días no mejora, regrese.
-Paciente: Perfecto doctor, muchas gracias."></textarea>
+            <h3>🎤 Grabación de Consulta Médica</h3>
+            <p><strong>Instrucciones:</strong> Haga clic en el botón para iniciar la grabación de la consulta. La IA transcribirá automáticamente el audio y generará las notas SOAP.</p>
             
-            <button class="button primary" onclick="procesarConsulta()" id="btnProcesar">
-                <span id="btnTexto">🤖 Procesar con IA Gemini</span>
-                <span id="btnLoading" class="hidden">⏳ Procesando...</span>
-            </button>
+            <div class="recorder-container">
+                <button id="recordButton" class="recorder-button ready" onclick="toggleRecording()">
+                    🎤
+                </button>
+                <div class="recorder-timer" id="timer">00:00</div>
+                <div class="recorder-status" id="status">Listo para grabar</div>
+                <canvas id="visualizer" class="audio-visualizer"></canvas>
+            </div>
+
+            <div id="transcriptPreview" class="transcript-preview">
+                <h4>📝 Transcripción en progreso...</h4>
+                <p id="transcriptText">Procesando audio...</p>
+            </div>
         </div>
 
         <div id="resultados_ia" class="card hidden">
             <h3>✅ Resultados del Análisis IA</h3>
             
             <div class="resultado-section">
-                <h4>📋 1. Notas Clínicas SOAP (Listas para copiar y pegar)</h4>
+                <h4>📄 Transcripción Completa</h4>
+                <pre id="transcript_output" class="soap-output" style="color: #ffffff;"></pre>
+                <button class="button secondary small" onclick="copiarTexto('transcript_output')">📋 Copiar Transcripción</button>
+            </div>
+            
+            <div class="resultado-section">
+                <h4>📋 Notas Clínicas SOAP (Listas para copiar)</h4>
                 <pre id="soap_output" class="soap-output"></pre>
                 <button class="button secondary small" onclick="copiarTexto('soap_output')">📋 Copiar SOAP</button>
             </div>
             
             <div class="resultado-section">
-                <h4>🔍 2. Información Crítica</h4>
+                <h4>🔍 Información Crítica</h4>
                 <div class="info-grid">
                     <div class="info-item">
                         <strong>Diagnóstico Sugerido:</strong>
@@ -70,59 +145,171 @@ Paciente: Perfecto doctor, muchas gracias."></textarea>
             </div>
 
             <div class="resultado-section">
-                <h4>✓ 3. Revisión de Cumplimiento Médico-Legal</h4>
+                <h4>✓ Revisión de Cumplimiento Médico-Legal</h4>
                 <p id="cumplimiento" class="cumplimiento-badge"></p>
             </div>
         </div>
     </main>
 
     <script>
-        async function procesarConsulta() {
-            const texto = document.getElementById('consulta_texto').value;
-            if (!texto.trim()) {
-                alert("Por favor, ingrese el texto de la consulta para procesar.");
-                return;
-            }
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+        let startTime;
+        let timerInterval;
+        let audioContext;
+        let analyser;
+        let dataArray;
+        let animationId;
 
-            const btnProcesar = document.getElementById('btnProcesar');
-            const btnTexto = document.getElementById('btnTexto');
-            const btnLoading = document.getElementById('btnLoading');
+        async function toggleRecording() {
+            if (!isRecording) {
+                await startRecording();
+            } else {
+                stopRecording();
+            }
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                
+                mediaRecorder.addEventListener('dataavailable', event => {
+                    audioChunks.push(event.data);
+                });
+
+                mediaRecorder.addEventListener('stop', async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    await processAudio(audioBlob);
+                });
+
+                setupVisualizer(stream);
+                
+                mediaRecorder.start();
+                isRecording = true;
+                
+                document.getElementById('recordButton').classList.remove('ready');
+                document.getElementById('recordButton').classList.add('recording');
+                document.getElementById('recordButton').textContent = '⏹️';
+                document.getElementById('status').textContent = '🔴 Grabando...';
+                
+                startTime = Date.now();
+                timerInterval = setInterval(updateTimer, 1000);
+                
+            } catch (error) {
+                console.error('Error al acceder al micrófono:', error);
+                alert('Error: No se pudo acceder al micrófono. Por favor, permita el acceso al micrófono en su navegador.');
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                isRecording = false;
+                
+                clearInterval(timerInterval);
+                cancelAnimationFrame(animationId);
+                
+                document.getElementById('recordButton').classList.remove('recording');
+                document.getElementById('recordButton').classList.add('ready');
+                document.getElementById('recordButton').textContent = '🎤';
+                document.getElementById('status').textContent = 'Procesando audio...';
+                document.getElementById('visualizer').classList.remove('active');
+            }
+        }
+
+        function setupVisualizer(stream) {
+            const canvas = document.getElementById('visualizer');
+            canvas.classList.add('active');
+            const canvasCtx = canvas.getContext('2d');
             
-            btnProcesar.disabled = true;
-            btnTexto.classList.add('hidden');
-            btnLoading.classList.remove('hidden');
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            const source = audioContext.createMediaStreamSource(stream);
+            source.connect(analyser);
+            
+            analyser.fftSize = 256;
+            const bufferLength = analyser.frequencyBinCount;
+            dataArray = new Uint8Array(bufferLength);
+            
+            canvas.width = canvas.offsetWidth;
+            canvas.height = 100;
+            
+            function draw() {
+                animationId = requestAnimationFrame(draw);
+                
+                analyser.getByteFrequencyData(dataArray);
+                
+                canvasCtx.fillStyle = '#2d2d2d';
+                canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                const barWidth = (canvas.width / bufferLength) * 2.5;
+                let barHeight;
+                let x = 0;
+                
+                for (let i = 0; i < bufferLength; i++) {
+                    barHeight = (dataArray[i] / 255) * canvas.height;
+                    
+                    canvasCtx.fillStyle = `rgb(${255 - dataArray[i]}, ${107 + dataArray[i] / 2}, 74)`;
+                    canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+                    
+                    x += barWidth + 1;
+                }
+            }
+            
+            draw();
+        }
+
+        function updateTimer() {
+            const elapsed = Date.now() - startTime;
+            const minutes = Math.floor(elapsed / 60000);
+            const seconds = Math.floor((elapsed % 60000) / 1000);
+            document.getElementById('timer').textContent = 
+                `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+
+        async function processAudio(audioBlob) {
+            const formData = new FormData();
+            formData.append('audio', audioBlob, 'consulta.webm');
+            
+            document.getElementById('transcriptPreview').classList.add('active');
+            document.getElementById('transcriptText').textContent = 'Transcribiendo audio con IA...';
 
             try {
-                const response = await fetch('/procesar_consulta', {
+                const response = await fetch('/api/transcribir_audio', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ consulta_texto: texto })
+                    body: formData
                 });
 
                 const data = await response.json();
                 
                 if (data.error) {
                     alert('Error: ' + data.error);
+                    document.getElementById('status').textContent = 'Error al procesar';
                     return;
                 }
                 
+                document.getElementById('transcript_output').textContent = data.transcription || 'No se pudo transcribir';
                 document.getElementById('soap_output').textContent = data.soap_output;
                 document.getElementById('diagnostico').textContent = data.diagnostico;
                 document.getElementById('plan').textContent = data.plan;
                 document.getElementById('cumplimiento').textContent = data.cumplimiento;
                 
                 document.getElementById('resultados_ia').classList.remove('hidden');
+                document.getElementById('status').textContent = '✅ Completado';
+                document.getElementById('timer').textContent = '00:00';
+                document.getElementById('transcriptPreview').classList.remove('active');
                 document.getElementById('resultados_ia').scrollIntoView({ behavior: 'smooth' });
                 
             } catch (error) {
                 console.error('Error:', error);
-                alert('Ocurrió un error al procesar la consulta. Por favor, intente nuevamente.');
-            } finally {
-                btnProcesar.disabled = false;
-                btnTexto.classList.remove('hidden');
-                btnLoading.classList.add('hidden');
+                alert('Ocurrió un error al procesar el audio. Por favor, intente nuevamente.');
+                document.getElementById('status').textContent = 'Error - Intente nuevamente';
+                document.getElementById('timer').textContent = '00:00';
             }
         }
 
