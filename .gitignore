@@ -19,33 +19,27 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
+
+# Virtual environments
 venv/
-ENV/
 env/
+ENV/
 
-# Flask
-instance/
-.webassets-cache
-
-# IDEs
+# IDE
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
-/tmp/
+# Database
+*.db
+consultas.db
 
 # Environment variables
-.env
 .env.local
+.env.production
 
-# Secrets (managed by Replit)
-# API keys are in Replit Secrets, not in code
+# Logs
+*.log

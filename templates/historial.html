@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Historial de Consultas - Chinoin AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .consulta-item {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 15px 0;
+            border-left: 4px solid #FF6B4A;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+        }
+        .consulta-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(255, 107, 74, 0.2);
+        }
+        .consulta-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .consulta-fecha {
+            color: #666;
+            font-size: 0.9em;
+        }
+        .consulta-diagnostico {
+            background: #fff5f2;
+            color: #FF6B4A;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: bold;
+        }
+        .consulta-preview {
+            color: #555;
+            line-height: 1.6;
+            margin: 10px 0;
+        }
+        .consulta-acciones {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+        .search-container {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 25px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .search-input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1em;
+            margin-bottom: 10px;
+        }
+        .search-input:focus {
+            border-color: #FF6B4A;
+            outline: none;
+        }
+        .no-consultas {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+        .modal-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 30px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #f0f0f0;
+            padding-bottom: 15px;
+        }
+        .close {
+            color: #aaa;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .close:hover {
+            color: #FF6B4A;
+        }
+        .soap-section {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f9f9f9;
+            border-radius: 8px;
+            border-left: 4px solid #FF6B4A;
+        }
+        .editable {
+            background: #fff;
+            border: 1px solid #ddd;
+            padding: 10px;
+            border-radius: 4px;
+            min-height: 60px;
+            margin-top: 10px;
+        }
+        .editable:focus {
+            border-color: #FF6B4A;
+            outline: none;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="CHINOIN Logo" class="logo">
+            <div>
+                <h1>Historial de Consultas</h1>
+                <p>Gestiona y revisa tus consultas anteriores</p>
+            </div>
+        </div>
+    </header>
+    <nav>
+        <a href="/">Dashboard</a>
+        <a href="/transcripcion">Transcriptor de Consultas (IA)</a>
+        <a href="/historial" class="active">Historial</a>
+        <a href="/asesoria">Asistente Legal/Contable</a>
+    </nav>
+    <main>
+        <div class="search-container">
+            <h3>🔍 Buscar Consultas</h3>
+            <input type="text" id="searchInput" class="search-input" 
+                   placeholder="Buscar por diagnóstico, síntomas, tratamiento...">
+            <button class="button primary" onclick="buscarConsultas()">Buscar</button>
+            <button class="button secondary" onclick="mostrarTodas()">Mostrar Todas</button>
+        </div>
+
+        <div id="consultasContainer">
+            {% if consultas %}
+                {% for consulta in consultas %}
+                <div class="consulta-item" data-id="{{ consulta.id }}">
+                    <div class="consulta-header">
+                        <div>
+                            <strong>Consulta #{{ consulta.id }}</strong>
+                            <div class="consulta-fecha">{{ consulta.fecha_consulta[:16] }}</div>
+                        </div>
+                        {% if consulta.diagnostico %}
+                        <div class="consulta-diagnostico">{{ consulta.diagnostico }}</div>
+                        {% endif %}
+                    </div>
+                    
+                    <div class="consulta-preview">
+                        {% if consulta.soap_subjetivo %}
+                            <strong>Síntomas:</strong> {{ consulta.soap_subjetivo[:150] }}{% if consulta.soap_subjetivo|length > 150 %}...{% endif %}
+                        {% else %}
+                            <strong>Transcripción:</strong> {{ consulta.transcripcion[:150] }}{% if consulta.transcripcion|length > 150 %}...{% endif %}
+                        {% endif %}
+                    </div>
+                    
+                    <div class="consulta-acciones">
+                        <button class="button primary small" onclick="verConsulta({{ consulta.id }})">
+                            👁️ Ver Completa
+                        </button>
+                        <button class="button secondary small" onclick="editarConsulta({{ consulta.id }})">
+                            ✏️ Editar
+                        </button>
+                        <button class="button secondary small" onclick="copiarSOAP({{ consulta.id }})">
+                            📋 Copiar SOAP
+                        </button>
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="no-consultas">
+                    <h3>📋 No hay consultas registradas</h3>
+                    <p>Las consultas que proceses aparecerán aquí para futuras referencias.</p>
+                    <a href="/transcripcion" class="button primary">Procesar Primera Consulta</a>
+                </div>
+            {% endif %}
+        </div>
+    </main>
+
+    <!-- Modal para ver/editar consulta -->
+    <div id="consultaModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">Consulta Completa</h2>
+                <span class="close" onclick="cerrarModal()">&times;</span>
+            </div>
+            
+            <div id="modalContent">
+                <!-- El contenido se carga dinámicamente -->
+            </div>
+            
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="button primary" id="guardarBtn" onclick="guardarCambios()" style="display: none;">
+                    💾 Guardar Cambios
+                </button>
+                <button class="button secondary" onclick="cerrarModal()">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let consultaActual = null;
+        let modoEdicion = false;
+
+        async function buscarConsultas() {
+            const termino = document.getElementById('searchInput').value.trim();
+            if (!termino) {
+                alert('Por favor ingresa un término de búsqueda');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/buscar_consultas?q=${encodeURIComponent(termino)}`);
+                const consultas = await response.json();
+                mostrarConsultas(consultas);
+            } catch (error) {
+                console.error('Error al buscar:', error);
+                alert('Error al realizar la búsqueda');
+            }
+        }
+
+        function mostrarTodas() {
+            document.getElementById('searchInput').value = '';
+            location.reload();
+        }
+
+        function mostrarConsultas(consultas) {
+            const container = document.getElementById('consultasContainer');
+            
+            if (consultas.length === 0) {
+                container.innerHTML = `
+                    <div class="no-consultas">
+                        <h3>🔍 No se encontraron resultados</h3>
+                        <p>Intenta con otros términos de búsqueda.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = consultas.map(consulta => `
+                <div class="consulta-item" data-id="${consulta.id}">
+                    <div class="consulta-header">
+                        <div>
+                            <strong>Consulta #${consulta.id}</strong>
+                            <div class="consulta-fecha">${consulta.fecha_consulta.substring(0, 16)}</div>
+                        </div>
+                        ${consulta.diagnostico ? `<div class="consulta-diagnostico">${consulta.diagnostico}</div>` : ''}
+                    </div>
+                    
+                    <div class="consulta-preview">
+                        ${consulta.soap_subjetivo ? 
+                            `<strong>Síntomas:</strong> ${consulta.soap_subjetivo.substring(0, 150)}${consulta.soap_subjetivo.length > 150 ? '...' : ''}` :
+                            `<strong>Transcripción:</strong> ${consulta.transcripcion.substring(0, 150)}${consulta.transcripcion.length > 150 ? '...' : ''}`
+                        }
+                    </div>
+                    
+                    <div class="consulta-acciones">
+                        <button class="button primary small" onclick="verConsulta(${consulta.id})">
+                            👁️ Ver Completa
+                        </button>
+                        <button class="button secondary small" onclick="editarConsulta(${consulta.id})">
+                            ✏️ Editar
+                        </button>
+                        <button class="button secondary small" onclick="copiarSOAP(${consulta.id})">
+                            📋 Copiar SOAP
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function verConsulta(id) {
+            await cargarConsulta(id, false);
+        }
+
+        async function editarConsulta(id) {
+            await cargarConsulta(id, true);
+        }
+
+        async function cargarConsulta(id, editar = false) {
+            try {
+                const response = await fetch(`/api/consulta/${id}`);
+                const consulta = await response.json();
+                
+                consultaActual = consulta;
+                modoEdicion = editar;
+                
+                document.getElementById('modalTitle').textContent = 
+                    editar ? `Editar Consulta #${id}` : `Consulta #${id}`;
+                
+                const content = `
+                    <div class="soap-section">
+                        <h4>📄 Transcripción</h4>
+                        <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;">
+                            ${consulta.transcripcion || 'No disponible'}
+                        </div>
+                    </div>
+                    
+                    <div class="soap-section">
+                        <h4>📋 Notas SOAP</h4>
+                        
+                        <div style="margin: 10px 0;">
+                            <strong>S (Subjetivo):</strong>
+                            <div class="${editar ? 'editable' : ''}" data-field="soap_subjetivo" ${editar ? 'contenteditable="true"' : ''}>
+                                ${consulta.soap_subjetivo || 'No disponible'}
+                            </div>
+                        </div>
+                        
+                        <div style="margin: 10px 0;">
+                            <strong>O (Objetivo):</strong>
+                            <div class="${editar ? 'editable' : ''}" data-field="soap_objetivo" ${editar ? 'contenteditable="true"' : ''}>
+                                ${consulta.soap_objetivo || 'No disponible'}
+                            </div>
+                        </div>
+                        
+                        <div style="margin: 10px 0;">
+                            <strong>A (Análisis):</strong>
+                            <div class="${editar ? 'editable' : ''}" data-field="soap_analisis" ${editar ? 'contenteditable="true"' : ''}>
+                                ${consulta.soap_analisis || 'No disponible'}
+                            </div>
+                        </div>
+                        
+                        <div style="margin: 10px 0;">
+                            <strong>P (Plan):</strong>
+                            <div class="${editar ? 'editable' : ''}" data-field="soap_plan" ${editar ? 'contenteditable="true"' : ''}>
+                                ${consulta.soap_plan || 'No disponible'}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="soap-section">
+                        <h4>🔍 Información Adicional</h4>
+                        <div style="margin: 10px 0;">
+                            <strong>Diagnóstico:</strong>
+                            <div class="${editar ? 'editable' : ''}" data-field="diagnostico" ${editar ? 'contenteditable="true"' : ''}>
+                                ${consulta.diagnostico || 'No especificado'}
+                            </div>
+                        </div>
+                        
+                        <div style="margin: 10px 0;">
+                            <strong>Notas Adicionales:</strong>
+                            <div class="${editar ? 'editable' : ''}" data-field="notas_adicionales" ${editar ? 'contenteditable="true"' : ''} style="min-height: 80px;">
+                                ${consulta.notas_adicionales || 'Sin notas adicionales'}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('modalContent').innerHTML = content;
+                document.getElementById('guardarBtn').style.display = editar ? 'inline-block' : 'none';
+                document.getElementById('consultaModal').style.display = 'block';
+                
+            } catch (error) {
+                console.error('Error al cargar consulta:', error);
+                alert('Error al cargar la consulta');
+            }
+        }
+
+        async function guardarCambios() {
+            if (!consultaActual || !modoEdicion) return;
+            
+            const datos = {};
+            const editables = document.querySelectorAll('.editable[data-field]');
+            
+            editables.forEach(el => {
+                const field = el.getAttribute('data-field');
+                datos[field] = el.textContent.trim();
+            });
+            
+            try {
+                const response = await fetch(`/api/consulta/${consultaActual.id}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(datos)
+                });
+                
+                if (response.ok) {
+                    alert('✅ Consulta actualizada correctamente');
+                    cerrarModal();
+                    location.reload(); // Recargar para mostrar cambios
+                } else {
+                    alert('Error al guardar los cambios');
+                }
+            } catch (error) {
+                console.error('Error al guardar:', error);
+                alert('Error al guardar los cambios');
+            }
+        }
+
+        async function copiarSOAP(id) {
+            try {
+                const response = await fetch(`/api/consulta/${id}`);
+                const consulta = await response.json();
+                
+                const soapText = `S (Subjetivo): ${consulta.soap_subjetivo || 'No disponible'}
+
+O (Objetivo): ${consulta.soap_objetivo || 'No disponible'}
+
+A (Análisis): ${consulta.soap_analisis || 'No disponible'}
+
+P (Plan): ${consulta.soap_plan || 'No disponible'}`;
+                
+                await navigator.clipboard.writeText(soapText);
+                alert('✅ Notas SOAP copiadas al portapapeles');
+            } catch (error) {
+                console.error('Error al copiar:', error);
+                alert('Error al copiar las notas SOAP');
+            }
+        }
+
+        function cerrarModal() {
+            document.getElementById('consultaModal').style.display = 'none';
+            consultaActual = null;
+            modoEdicion = false;
+        }
+
+        // Cerrar modal al hacer clic fuera
+        window.onclick = function(event) {
+            const modal = document.getElementById('consultaModal');
+            if (event.target == modal) {
+                cerrarModal();
+            }
+        }
+
+        // Búsqueda con Enter
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                buscarConsultas();
+            }
+        });
+    </script>
+
+    <footer>
+        <p>&copy; 2025 CHINOIN® - Kit de herramientas gratuito para médicos | Powered by Gemini AI</p>
+    </footer>
+</body>
+</html>

@@ -89,6 +89,7 @@
     <nav>
         <a href="/">Dashboard</a>
         <a href="/transcripcion" class="active">Transcriptor de Consultas (IA)</a>
+        <a href="/historial">Historial</a>
         <a href="/asesoria">Asistente Legal/Contable</a>
     </nav>
     <main>
@@ -99,6 +100,14 @@
             
             <h3>🎤 Grabación de Consulta Médica</h3>
             <p><strong>Instrucciones:</strong> Haga clic en el botón para iniciar la grabación de la consulta. La IA transcribirá automáticamente el audio y generará las notas SOAP.</p>
+            
+            <div style="margin: 15px 0;">
+                <label for="pacienteNombre" style="display: block; margin-bottom: 5px; font-weight: bold;">
+                    👤 Nombre del Paciente (Opcional):
+                </label>
+                <input type="text" id="pacienteNombre" placeholder="Ej: Juan Pérez" 
+                       style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px;">
+            </div>
             
             <div class="recorder-container">
                 <button id="recordButton" class="recorder-button ready" onclick="toggleRecording()">
@@ -275,6 +284,12 @@
         async function processAudio(audioBlob) {
             const formData = new FormData();
             formData.append('audio', audioBlob, 'consulta.webm');
+            
+            // Agregar nombre del paciente si está disponible
+            const pacienteNombre = document.getElementById('pacienteNombre').value.trim();
+            if (pacienteNombre) {
+                formData.append('paciente_nombre', pacienteNombre);
+            }
             
             document.getElementById('transcriptPreview').classList.add('active');
             document.getElementById('transcriptText').textContent = 'Transcribiendo audio con IA...';

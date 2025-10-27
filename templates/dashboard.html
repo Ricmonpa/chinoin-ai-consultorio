@@ -19,6 +19,7 @@
     <nav>
         <a href="/" class="active">Dashboard</a>
         <a href="/transcripcion">Transcriptor de Consultas (IA)</a>
+        <a href="/historial">Historial</a>
         <a href="/asesoria">Asistente Legal/Contable</a>
     </nav>
     <main>
@@ -27,7 +28,12 @@
         <div class="card highlight">
             <h3>🚀 ¡Empieza Ya!</h3>
             <p>Automatiza tus notas clínicas en segundos con inteligencia artificial de última generación.</p>
-            <a href="/transcripcion" class="button primary">Iniciar Transcripción de Consulta</a>
+            <div style="text-align: center; margin-top: 20px;">
+                <a href="/transcripcion" class="button primary">Iniciar Transcripción de Consulta</a>
+                {% if stats.total_consultas > 0 %}
+                <a href="/historial" class="button secondary">📋 Ver Historial ({{ stats.total_consultas }})</a>
+                {% endif %}
+            </div>
         </div>
         
         <div class="dashboard-grid">
@@ -41,19 +47,29 @@
             </div>
 
             <div class="card stats">
-                <h3>📊 Resumen Financiero Rápido</h3>
+                <h3>📊 Estadísticas de Consultas</h3>
                 <div class="stat-item">
-                    <span class="stat-label">Ingresos del Mes:</span>
-                    <span class="stat-value">$45,000 MXN</span>
+                    <span class="stat-label">Total Consultas:</span>
+                    <span class="stat-value">{{ stats.total_consultas }}</span>
                 </div>
                 <div class="stat-item">
-                    <span class="stat-label">Gastos Deducibles:</span>
-                    <span class="stat-value">95%</span>
+                    <span class="stat-label">Días Activos:</span>
+                    <span class="stat-value">{{ stats.dias_activos }}</span>
                 </div>
                 <div class="stat-item">
-                    <span class="stat-label">Consultas Procesadas:</span>
-                    <span class="stat-value">{{ total_consultas }}</span>
+                    <span class="stat-label">Duración Promedio:</span>
+                    <span class="stat-value">{{ stats.duracion_promedio }}min</span>
                 </div>
+                {% if stats.top_diagnosticos %}
+                <div style="margin-top: 15px;">
+                    <strong>Diagnósticos Frecuentes:</strong>
+                    <ul style="margin-top: 8px; font-size: 0.9em;">
+                        {% for diag in stats.top_diagnosticos[:3] %}
+                        <li>{{ diag.diagnostico }} ({{ diag.frecuencia }})</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
             </div>
         </div>
         
