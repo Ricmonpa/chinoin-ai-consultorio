@@ -302,7 +302,17 @@
 
                 const data = await response.json();
                 
+                // LOGS PARA DEBUG EN CELULAR
+                console.log('=== RESPUESTA COMPLETA DE LA API ===');
+                console.log('Status:', response.status);
+                console.log('Data completa:', data);
+                console.log('Debug info:', data.debug);
+                console.log('Raw AI Response:', data.debug?.raw_ai_response);
+                console.log('SOAP Output:', data.soap_output);
+                console.log('=====================================');
+                
                 if (data.error) {
+                    console.error('ERROR:', data.error);
                     alert('Error: ' + data.error);
                     document.getElementById('status').textContent = 'Error al procesar';
                     return;
@@ -313,6 +323,26 @@
                 document.getElementById('diagnostico').textContent = data.diagnostico;
                 document.getElementById('plan').textContent = data.plan;
                 document.getElementById('cumplimiento').textContent = data.cumplimiento;
+                
+                // Mostrar debug info si existe
+                if (data.debug) {
+                    console.log('=== DEBUG INFO ===');
+                    console.log('Raw AI Response:', data.debug.raw_ai_response);
+                    console.log('Response Length:', data.debug.response_length);
+                    console.log('Transcription Length:', data.debug.transcription_length);
+                    
+                    // Mostrar en la UI también
+                    const debugDiv = document.createElement('div');
+                    debugDiv.style.cssText = 'background:#ffe; border:2px solid #fa0; padding:15px; margin:20px 0; border-radius:8px; font-family:monospace; font-size:12px;';
+                    debugDiv.innerHTML = `
+                        <strong style="color:#f60;">🐛 DEBUG INFO:</strong><br>
+                        <strong>Raw AI Response (first 800 chars):</strong><br>
+                        <pre style="white-space:pre-wrap; background:#fff; padding:10px; border-radius:4px; max-height:200px; overflow-y:auto;">${data.debug.raw_ai_response}</pre>
+                        <strong>Response Length:</strong> ${data.debug.response_length} chars<br>
+                        <strong>Transcription Length:</strong> ${data.debug.transcription_length} chars
+                    `;
+                    document.getElementById('resultados_ia').prepend(debugDiv);
+                }
                 
                 document.getElementById('resultados_ia').classList.remove('hidden');
                 document.getElementById('status').textContent = '✅ Completado';

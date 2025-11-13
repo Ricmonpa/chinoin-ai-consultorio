@@ -65,7 +65,7 @@ def transcribir_audio_con_gemini(audio_bytes, api_key):
         return None
 
 # Función para llamar a Gemini via API REST
-def call_gemini_api(prompt, api_key):
+def call_gemini_api(prompt, api_key, force_json=False):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
     
     headers = {
@@ -80,15 +80,29 @@ def call_gemini_api(prompt, api_key):
         }]
     }
     
+    # Forzar respuesta en JSON si se solicita
+    if force_json:
+        data["generationConfig"] = {
+            "response_mime_type": "application/json"
+        }
+    
     try:
         response = requests.post(url, headers=headers, json=data)
+        print(f"[DEBUG] Gemini API Status: {response.status_code}")
+        
         if response.status_code == 200:
             result = response.json()
             if 'candidates' in result and len(result['candidates']) > 0:
-                return result['candidates'][0]['content']['parts'][0]['text']
+                response_text = result['candidates'][0]['content']['parts'][0]['text']
+                print(f"[DEBUG] Gemini Response (primeros 300 chars): {response_text[:300]}")
+                return response_text
+        else:
+            print(f"[ERROR] Gemini API Error: {response.status_code} - {response.text}")
         return None
     except Exception as e:
-        print(f"Error calling Gemini API: {e}")
+        print(f"[ERROR] Exception calling Gemini API: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 # Inicializar base de datos
@@ -296,17 +310,19 @@ Responde en formato JSON con esta estructura:
   }
 }"""
         
-        soap_response_text = call_gemini_api(soap_prompt, GEMINI_API_KEY)
+        # FORZAR respuesta JSON con el parámetro correcto
+        soap_response_text = call_gemini_api(soap_prompt, GEMINI_API_KEY, force_json=True)
         
         if not soap_response_text:
-            return jsonify({"error": "No se pudo generar notas SOAP."}), 500
+            print("[ERROR] No se recibió respuesta de Gemini para SOAP")
+            return jsonify({"error": "No se pudo generar notas SOAP. Verifique la conexión con Gemini."}), 500
         
-        # Debug: imprimir la respuesta de la IA
-        print(f"Respuesta de IA para SOAP: {soap_response_text[:500]}...")
+        print(f"[DEBUG] Respuesta SOAP completa: {soap_response_text}")
         
-        # Intentar parsear como JSON, si falla usar texto plano
+        # Parsear JSON - ahora debería funcionar siempre
         try:
             resultado = json.loads(soap_response_text)
+            print("[SUCCESS] JSON parseado correctamente")
             
             soap_data = resultado.get('soap', {})
             subjetivo = soap_data.get('subjetivo', 'No disponible')
@@ -318,17 +334,14 @@ Responde en formato JSON con esta estructura:
             tratamiento = resultado.get('tratamiento', 'No especificado')
             cumplimiento_data = resultado.get('cumplimiento', {})
             cumplimiento_estado = cumplimiento_data.get('estado', 'Pendiente de revisar')
+            
         except json.JSONDecodeError as e:
-            print(f"Error parsing JSON: {e}")
-            print(f"Respuesta completa: {soap_response_text}")
-            # Si no es JSON válido, usar valores por defecto
-            subjetivo = "Dolor de garganta, fiebre y cefalea desde hace 3 días"
-            objetivo = "Inflamación en amígdalas visible al examen físico"
-            analisis = "Faringitis viral probable"
-            plan = "Paracetamol 500mg c/8h x 5 días, hidratación, reposo relativo x 3 días"
-            diagnostico = "Faringitis viral"
-            tratamiento = "Paracetamol 500mg cada 8 horas por 5 días"
-            cumplimiento_estado = "Verificado"
+            print(f"[ERROR CRÍTICO] JSON inválido después de forzar formato: {e}")
+            print(f"[ERROR] Respuesta completa: {soap_response_text}")
+            return jsonify({
+                "error": "Error al parsear respuesta de IA. Respuesta no es JSON válido.",
+                "debug_info": soap_response_text[:500]
+            }), 500
         
         soap_formateado = "S (Subjetivo): " + subjetivo + "\n\n"
         soap_formateado += "O (Objetivo): " + objetivo + "\n\n"
@@ -356,13 +369,22 @@ Responde en formato JSON con esta estructura:
             "diagnostico": diagnostico,
             "plan": tratamiento,
             "cumplimiento": cumplimiento_estado,
-            "consulta_id": consulta_id
+            "consulta_id": consulta_id,
+            "debug": {
+                "raw_ai_response": soap_response_text[:800] if soap_response_text else "No response",
+                "response_length": len(soap_response_text) if soap_response_text else 0,
+                "transcription_length": len(transcripcion)
+            }
         })
         
     except Exception as e:
         import traceback
-        traceback.print_exc()
-        return jsonify({"error": "Error al procesar audio: " + str(e)}), 500
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Exception: {error_details}")
+        return jsonify({
+            "error": "Error al procesar audio: " + str(e),
+            "debug": {"traceback": error_details[:500]}
+        }), 500
 
 @app.route('/api/transcribir_audio_disabled', methods=['POST'])
 def transcribir_audio_disabled():
@@ -526,9 +548,92 @@ def buscar_consultas_api():
     consultas = db.buscar_consultas(termino)
     return jsonify(consultas)
 
+@app.route('/api/test_soap_debug', methods=['POST'])
+def test_soap_debug():
+    """Endpoint de debug para probar generación de SOAP con logs visibles"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON"}), 400
+    
+    transcripcion = request.json.get('transcripcion', '')
+    if not transcripcion:
+        return jsonify({"error": "Falta transcripción"}), 400
+    
+    debug_log = []
+    
+    soap_prompt = """Eres un asistente médico experto que analiza transcripciones de consultas médicas.
+
+Analiza la siguiente transcripción de una consulta médica y genera:
+
+1. NOTAS SOAP (formato estructurado):
+   - S (Subjetivo): Qué reporta el paciente (síntomas, molestias, historia)
+   - O (Objetivo): Hallazgos de la exploración física, signos vitales
+   - A (Análisis): Diagnóstico probable o diagnósticos diferenciales
+   - P (Plan): Tratamiento, medicamentos (con dosis), estudios, seguimiento
+
+2. DIAGNÓSTICO SUGERIDO: El diagnóstico más probable basado en la información
+
+3. PLAN DE TRATAMIENTO: Resumen del tratamiento con medicamentos y dosis específicas
+
+4. VERIFICACIÓN DE CUMPLIMIENTO: Indica si se mencionó:
+   - Consentimiento informado (para procedimientos)
+   - Explicación de riesgos
+   - Instrucciones claras al paciente
+
+TRANSCRIPCIÓN DE LA CONSULTA:
+""" + transcripcion + """
+
+Responde en formato JSON con esta estructura:
+{
+  "soap": {
+    "subjetivo": "texto",
+    "objetivo": "texto", 
+    "analisis": "texto",
+    "plan": "texto"
+  },
+  "diagnostico": "texto",
+  "tratamiento": "texto",
+  "cumplimiento": {
+    "consentimiento": "mencionado/no mencionado",
+    "riesgos_explicados": "si/no",
+    "instrucciones_claras": "si/no",
+    "estado": "Verificado/Pendiente de revisar"
+  }
+}"""
+    
+    debug_log.append("Llamando a Gemini API con force_json=True...")
+    soap_response_text = call_gemini_api(soap_prompt, GEMINI_API_KEY, force_json=True)
+    
+    if not soap_response_text:
+        debug_log.append("ERROR: No se recibió respuesta de Gemini")
+        return jsonify({"error": "No response from Gemini", "debug_log": debug_log}), 500
+    
+    debug_log.append(f"Respuesta recibida (primeros 500 chars): {soap_response_text[:500]}")
+    
+    try:
+        resultado = json.loads(soap_response_text)
+        debug_log.append("SUCCESS: JSON parseado correctamente")
+        return jsonify({
+            "success": True,
+            "resultado": resultado,
+            "debug_log": debug_log,
+            "raw_response": soap_response_text
+        })
+    except json.JSONDecodeError as e:
+        debug_log.append(f"ERROR: JSON inválido - {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "debug_log": debug_log,
+            "raw_response": soap_response_text
+        }), 500
+
 @app.route('/asesoria')
 def vista_asesoria():
     return render_template('asesoria.html')
+
+@app.route('/debug_soap')
+def vista_debug_soap():
+    return render_template('debug_soap.html')
 
 @app.route('/consultar_norma', methods=['POST'])
 def consultar_norma():
