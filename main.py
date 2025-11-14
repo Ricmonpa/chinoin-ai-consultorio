@@ -13,11 +13,16 @@ load_dotenv()
 # Configuración para desarrollo local
 SESSION_SECRET = os.environ.get('SESSION_SECRET', 'dev_secret_key_123')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 
 if not GEMINI_API_KEY:
     print("ADVERTENCIA: GEMINI_API_KEY no está configurado.")
     print("La funcionalidad de IA no funcionará sin esta clave.")
     print("Para obtener una clave: https://makersuite.google.com/app/apikey")
+
+if not GROQ_API_KEY:
+    print("ADVERTENCIA: GROQ_API_KEY no está configurado.")
+    print("El fallback de IA no estará disponible.")
 
 app = Flask(__name__)
 app.secret_key = SESSION_SECRET
@@ -62,6 +67,43 @@ def transcribir_audio_con_gemini(audio_bytes, api_key):
         return None
     except Exception as e:
         print(f"Error transcribiendo audio: {e}")
+        return None
+
+# Función para llamar a Groq como fallback
+def call_groq_api(prompt, api_key):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    
+    headers = {
+        'Authorization': f'Bearer {api_key}',
+        'Content-Type': 'application/json',
+    }
+    
+    data = {
+        "model": "llama-3.1-70b-versatile",
+        "messages": [
+            {
+                "role": "system",
+                "content": "Eres un asistente médico experto en crear notas SOAP profesionales y detalladas en español."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.7,
+        "max_tokens": 2000
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            result = response.json()
+            return result['choices'][0]['message']['content']
+        else:
+            print(f"Groq API error: {response.status_code} - {response.text}")
+        return None
+    except Exception as e:
+        print(f"Error calling Groq API: {e}")
         return None
 
 # Función para llamar a Gemini via API REST
@@ -310,12 +352,34 @@ Responde en formato JSON con esta estructura:
   }
 }"""
         
-        # FORZAR respuesta JSON con el parámetro correcto
-        soap_response_text = call_gemini_api(soap_prompt, GEMINI_API_KEY, force_json=True)
+        # Intentar con Gemini primero
+        soap_response_text = None
+        provider_used = None
         
+        try:
+            print("[INFO] Intentando generar SOAP con Gemini...")
+            soap_response_text = call_gemini_api(soap_prompt, GEMINI_API_KEY, force_json=True)
+            if soap_response_text:
+                provider_used = "gemini"
+                print("[SUCCESS] Gemini respondió correctamente")
+        except Exception as e:
+            print(f"[WARNING] Gemini falló: {e}")
+        
+        # Si Gemini falla, intentar con Groq
+        if not soap_response_text and GROQ_API_KEY:
+            try:
+                print("[INFO] ⚠️ Gemini falló, intentando con Groq...")
+                soap_response_text = call_groq_api(soap_prompt, GROQ_API_KEY)
+                if soap_response_text:
+                    provider_used = "groq"
+                    print("[SUCCESS] Groq respondió correctamente")
+            except Exception as e:
+                print(f"[ERROR] Groq también falló: {e}")
+        
+        # Si ambos fallan, retornar error
         if not soap_response_text:
-            print("[ERROR] No se recibió respuesta de Gemini para SOAP")
-            return jsonify({"error": "No se pudo generar notas SOAP. Verifique la conexión con Gemini."}), 500
+            print("[ERROR] ❌ Ambos servicios (Gemini y Groq) fallaron")
+            return jsonify({"error": "Servicios de análisis temporalmente no disponibles. Intenta de nuevo en unos minutos."}), 503
         
         print(f"[DEBUG] Respuesta SOAP completa: {soap_response_text}")
         
@@ -370,10 +434,12 @@ Responde en formato JSON con esta estructura:
             "plan": tratamiento,
             "cumplimiento": cumplimiento_estado,
             "consulta_id": consulta_id,
+            "provider": provider_used,
             "debug": {
                 "raw_ai_response": soap_response_text[:800] if soap_response_text else "No response",
                 "response_length": len(soap_response_text) if soap_response_text else 0,
-                "transcription_length": len(transcripcion)
+                "transcription_length": len(transcripcion),
+                "ai_provider": provider_used
             }
         })
         
