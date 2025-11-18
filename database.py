@@ -278,6 +278,9 @@ class TransaccionDB:
             if filtros.get('clasificacion'):
                 query += ' AND (clasificacion_ia = ? OR clasificacion_contador = ?)'
                 params.extend([filtros['clasificacion'], filtros['clasificacion']])
+            if filtros.get('cfdi_uuid'):
+                query += ' AND cfdi_uuid = ?'
+                params.append(filtros['cfdi_uuid'])
         
         query += ' ORDER BY fecha DESC LIMIT ?'
         params.append(limite)

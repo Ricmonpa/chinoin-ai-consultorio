@@ -2,9 +2,25 @@
 import os
 import sys
 import json
-from flask import Flask, render_template, request, jsonify
+from datetime import datetime
+from flask import Flask, render_template, request, jsonify, make_response
+from io import BytesIO
 import requests
+import xlsxwriter
+import openpyxl
 from database import ConsultaDB, TransaccionDB
+from clasificaciones_fiscales import (
+    obtener_clasificaciones_por_tipo,
+    obtener_porcentaje_deducible,
+    obtener_lista_clasificaciones_por_tipo,
+    validar_clasificacion
+)
+from formas_pago_sat import (
+    obtener_formas_pago,
+    validar_forma_pago,
+    es_efectivo,
+    validar_deducibilidad_efectivo
+)
 from dotenv import load_dotenv
 
 # Cargar variables de entorno
@@ -703,7 +719,19 @@ def vista_contador():
     # Obtener transacciones recientes
     transacciones = transaccion_db.obtener_transacciones(limite=50)
     
-    return render_template('contador.html', stats=stats, transacciones=transacciones)
+    # Obtener clasificaciones disponibles para el frontend
+    clasificaciones_ingresos = obtener_lista_clasificaciones_por_tipo('ingreso')
+    clasificaciones_gastos = obtener_lista_clasificaciones_por_tipo('gasto')
+    
+    # Obtener formas de pago válidas del SAT
+    formas_pago = obtener_formas_pago()
+    
+    return render_template('contador.html', 
+                         stats=stats, 
+                         transacciones=transacciones,
+                         clasificaciones_ingresos=clasificaciones_ingresos,
+                         clasificaciones_gastos=clasificaciones_gastos,
+                         formas_pago=formas_pago)
 
 @app.route('/debug_soap')
 def vista_debug_soap():
@@ -735,11 +763,48 @@ def crear_transaccion_api():
     if not request.json:
         return jsonify({"error": "No se recibió datos JSON"}), 400
     
-    # Clasificar automáticamente con IA
+    tipo = request.json.get('tipo', 'gasto')
     concepto = request.json.get('concepto', '')
     proveedor = request.json.get('proveedor', '')
+    clasificacion_manual = request.json.get('clasificacion', '')
+    forma_pago = request.json.get('forma_pago', '')
+    monto = float(request.json.get('monto', 0))
     
-    clasificacion_ia = transaccion_db.clasificar_con_ia(concepto, proveedor)
+    # Validar forma de pago
+    warnings = []
+    if forma_pago and not validar_forma_pago(forma_pago):
+        return jsonify({"error": f"Forma de pago inválida: {forma_pago}"}), 400
+    
+    # Validar deducibilidad de efectivo
+    validacion_efectivo = None
+    if forma_pago and tipo == 'gasto':
+        validacion_efectivo = validar_deducibilidad_efectivo(monto, forma_pago)
+        if validacion_efectivo['warning']:
+            warnings.append(validacion_efectivo['mensaje'])
+    
+    # Si se proporciona clasificación manual, validarla y usar su porcentaje
+    if clasificacion_manual and validar_clasificacion(clasificacion_manual, tipo):
+        clasificacion_ia = {
+            'clasificacion': clasificacion_manual,
+            'deducible_porcentaje': obtener_porcentaje_deducible(clasificacion_manual),
+            'confianza': 'alta',
+            'metodo': 'manual'
+        }
+        # Si hay warning de efectivo y no es deducible, sobrescribir porcentaje
+        if validacion_efectivo and not validacion_efectivo['es_deducible']:
+            clasificacion_ia['deducible_porcentaje'] = 0
+    else:
+        # Clasificar automáticamente con IA
+        clasificacion_ia = transaccion_db.clasificar_con_ia(concepto, proveedor)
+        # Si la clasificación sugerida no es válida, usar una por defecto
+        if not validar_clasificacion(clasificacion_ia.get('clasificacion', ''), tipo):
+            clasificaciones = obtener_lista_clasificaciones_por_tipo(tipo)
+            if clasificaciones:
+                clasificacion_ia['clasificacion'] = clasificaciones[0]
+                clasificacion_ia['deducible_porcentaje'] = obtener_porcentaje_deducible(clasificaciones[0])
+        # Si hay warning de efectivo y no es deducible, sobrescribir porcentaje
+        if validacion_efectivo and not validacion_efectivo['es_deducible']:
+            clasificacion_ia['deducible_porcentaje'] = 0
     
     transaccion_data = {
         **request.json,
@@ -749,11 +814,16 @@ def crear_transaccion_api():
     
     transaccion_id = transaccion_db.guardar_transaccion(transaccion_data)
     
-    return jsonify({
+    response = {
         "id": transaccion_id,
         "clasificacion_sugerida": clasificacion_ia,
         "message": "Transacción creada exitosamente"
-    }), 201
+    }
+    
+    if warnings:
+        response["warnings"] = warnings
+    
+    return jsonify(response), 201
 
 @app.route('/api/transacciones/<int:transaccion_id>/validar', methods=['POST'])
 def validar_transaccion_api(transaccion_id):
@@ -761,10 +831,26 @@ def validar_transaccion_api(transaccion_id):
     if not request.json:
         return jsonify({"error": "No se recibió datos JSON"}), 400
     
+    clasificacion = request.json.get('clasificacion', '')
+    deducible_manual = request.json.get('deducible_porcentaje')
+    
+    # Obtener el tipo de transacción para validar la clasificación
+    transaccion = transaccion_db.obtener_transacciones({'id': transaccion_id}, limite=1)
+    tipo = transaccion[0].get('tipo', 'gasto') if transaccion else 'gasto'
+    
+    # Validar clasificación y obtener porcentaje si es válida
+    if clasificacion and validar_clasificacion(clasificacion, tipo):
+        porcentaje = obtener_porcentaje_deducible(clasificacion)
+        # Si se proporciona un porcentaje manual, usarlo (permite ajustes)
+        if deducible_manual is not None:
+            porcentaje = int(deducible_manual)
+    else:
+        porcentaje = deducible_manual if deducible_manual is not None else 0
+    
     validacion_data = {
         'estatus': request.json.get('estatus', 'aprobado'),
-        'clasificacion': request.json.get('clasificacion'),
-        'deducible_porcentaje': request.json.get('deducible_porcentaje', 0),
+        'clasificacion': clasificacion,
+        'deducible_porcentaje': porcentaje,
         'notas': request.json.get('notas', ''),
         'validado_por': request.json.get('validado_por', 'contador')
     }
@@ -775,6 +861,23 @@ def validar_transaccion_api(transaccion_id):
         return jsonify({"message": "Transacción validada correctamente"})
     else:
         return jsonify({"error": "No se pudo validar la transacción"}), 400
+
+@app.route('/api/clasificaciones', methods=['GET'])
+def obtener_clasificaciones_api():
+    """API para obtener clasificaciones fiscales disponibles"""
+    tipo = request.args.get('tipo', 'gasto')
+    clasificaciones = obtener_clasificaciones_por_tipo(tipo)
+    
+    # Formatear para el frontend
+    resultado = []
+    for nombre, datos in clasificaciones.items():
+        resultado.append({
+            'nombre': nombre,
+            'deducible_porcentaje': datos['deducible_porcentaje'],
+            'descripcion': datos['descripcion']
+        })
+    
+    return jsonify(resultado)
 
 @app.route('/api/clasificar_gasto', methods=['POST'])
 def clasificar_gasto_api():
@@ -791,12 +894,16 @@ def clasificar_gasto_api():
     
     # Si la confianza es baja, usar Gemini para clasificación inteligente
     if clasificacion_reglas['confianza'] == 'baja' and GEMINI_API_KEY:
+        # Obtener lista de clasificaciones válidas para sugerir
+        clasificaciones_validas = obtener_lista_clasificaciones_por_tipo('gasto')
+        clasificaciones_str = ', '.join(clasificaciones_validas[:10])  # Primeras 10 para no saturar
+        
         prompt = f"""Eres un experto contador especializado en fiscalidad médica en México.
 
-Analiza el siguiente gasto y proporciona:
-1. Clasificación fiscal (ej: "Deducible Operativo", "Deducible Parcial", "No Deducible", "Material Médico", "Servicios Profesionales", etc.)
-2. Porcentaje de deducibilidad (0-100)
-3. Justificación breve
+Analiza el siguiente gasto y selecciona UNA de estas clasificaciones fiscales válidas:
+{clasificaciones_str}
+
+IMPORTANTE: Debes elegir EXACTAMENTE una de las clasificaciones de la lista anterior.
 
 GASTO:
 - Concepto: {concepto}
@@ -808,7 +915,7 @@ CONTEXTO FISCAL:
 
 Responde en formato JSON:
 {{
-  "clasificacion": "texto",
+  "clasificacion": "nombre_exacto_de_la_clasificacion",
   "deducible_porcentaje": numero,
   "justificacion": "texto breve"
 }}"""
@@ -817,11 +924,18 @@ Responde en formato JSON:
             response_text = call_gemini_api(prompt, GEMINI_API_KEY, force_json=True)
             if response_text:
                 resultado_ia = json.loads(response_text)
-                return jsonify({
-                    **resultado_ia,
-                    'confianza': 'alta',
-                    'metodo': 'gemini_ia'
-                })
+                # Validar que la clasificación sea válida
+                clasif_nombre = resultado_ia.get('clasificacion', '')
+                if validar_clasificacion(clasif_nombre, 'gasto'):
+                    # Obtener el porcentaje correcto de la clasificación
+                    porcentaje = obtener_porcentaje_deducible(clasif_nombre)
+                    return jsonify({
+                        'clasificacion': clasif_nombre,
+                        'deducible_porcentaje': porcentaje,
+                        'justificacion': resultado_ia.get('justificacion', ''),
+                        'confianza': 'alta',
+                        'metodo': 'gemini_ia'
+                    })
         except Exception as e:
             print(f"Error en clasificación con Gemini: {e}")
     
@@ -837,12 +951,605 @@ def estadisticas_financieras_api():
     stats = transaccion_db.obtener_estadisticas_financieras(medico_id, fecha_desde, fecha_hasta)
     return jsonify(stats)
 
+@app.route('/api/contador/template-excel')
+def template_excel_api():
+    """API para descargar template Excel para importar transacciones"""
+    # Crear archivo en memoria
+    output = BytesIO()
+    workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+    worksheet = workbook.add_worksheet('Transacciones')
+    
+    # Estilos
+    header_format = workbook.add_format({
+        'bold': True,
+        'bg_color': '#4472C4',
+        'font_color': '#FFFFFF',
+        'border': 1,
+        'align': 'center',
+        'valign': 'vcenter'
+    })
+    
+    date_format = workbook.add_format({'num_format': 'dd/mm/yyyy'})
+    currency_format = workbook.add_format({'num_format': '$#,##0.00'})
+    
+    # Headers
+    headers = [
+        'Fecha', 'Tipo', 'RFC_Emisor', 'RFC_Receptor', 'UUID', 
+        'Concepto', 'Subtotal', 'IVA', 'Total', 
+        'Forma_Pago', 'Metodo_Pago', 'Clasificacion', 
+        'Deducible_%', 'Cuenta_Bancaria', 'Notas'
+    ]
+    
+    # Escribir headers
+    for col, header in enumerate(headers):
+        worksheet.write(0, col, header, header_format)
+    
+    # Ejemplo de datos (segunda fila)
+    hoy = datetime.now().strftime('%Y-%m-%d')
+    ejemplo = [
+        hoy,  # Fecha
+        'Gasto',  # Tipo
+        'XAXX010101000',  # RFC_Emisor (ejemplo)
+        'XAXX010101000',  # RFC_Receptor
+        '00000000-0000-0000-0000-000000000000',  # UUID
+        'Material de curación',  # Concepto
+        1500.00,  # Subtotal
+        0.00,  # IVA
+        1500.00,  # Total
+        '03 - Transferencia electrónica',  # Forma_Pago
+        'Transferencia bancaria',  # Metodo_Pago
+        'Material de curación',  # Clasificacion
+        100,  # Deducible_%
+        '1234567890',  # Cuenta_Bancaria
+        'Ejemplo de transacción'  # Notas
+    ]
+    
+    # Escribir ejemplo
+    for col, value in enumerate(ejemplo):
+        if col == 0:  # Fecha
+            worksheet.write(1, col, value, date_format)
+        elif col in [6, 7, 8]:  # Subtotal, IVA, Total
+            worksheet.write(1, col, value, currency_format)
+        else:
+            worksheet.write(1, col, value)
+    
+    # Ajustar ancho de columnas
+    worksheet.set_column('A:A', 12)  # Fecha
+    worksheet.set_column('B:B', 10)  # Tipo
+    worksheet.set_column('C:D', 15)  # RFCs
+    worksheet.set_column('E:E', 36)  # UUID
+    worksheet.set_column('F:F', 25)  # Concepto
+    worksheet.set_column('G:I', 12)  # Montos
+    worksheet.set_column('J:J', 30)  # Forma_Pago
+    worksheet.set_column('K:K', 20)  # Metodo_Pago
+    worksheet.set_column('L:L', 25)  # Clasificacion
+    worksheet.set_column('M:M', 12)  # Deducible_%
+    worksheet.set_column('N:N', 15)  # Cuenta_Bancaria
+    worksheet.set_column('O:O', 30)  # Notas
+    
+    workbook.close()
+    output.seek(0)
+    
+    # Nombre del archivo con mes y año
+    mes_ano = datetime.now().strftime('%m_%Y')
+    filename = f'Template_Transacciones_{mes_ano}.xlsx'
+    
+    response = make_response(output.getvalue())
+    response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+    response.headers["Content-type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    
+    return response
+
+@app.route('/api/contador/importar-excel', methods=['POST'])
+def importar_excel_api():
+    """API para importar transacciones desde un archivo Excel"""
+    if 'archivo' not in request.files:
+        return jsonify({"error": "No se recibió archivo"}), 400
+    
+    archivo = request.files['archivo']
+    if archivo.filename == '':
+        return jsonify({"error": "Archivo vacío"}), 400
+    
+    # Validar extensión
+    if not (archivo.filename.endswith('.xlsx') or archivo.filename.endswith('.csv')):
+        return jsonify({"error": "Formato no soportado. Solo .xlsx y .csv"}), 400
+    
+    exitosas = 0
+    duplicadas = 0
+    errores = []
+    
+    try:
+        if archivo.filename.endswith('.xlsx'):
+            # Leer Excel
+            workbook = openpyxl.load_workbook(archivo)
+            worksheet = workbook.active
+            
+            # Leer headers (primera fila)
+            headers = []
+            for cell in worksheet[1]:
+                headers.append(cell.value.strip() if cell.value else '')
+            
+            # Validar que tenga las columnas necesarias
+            columnas_requeridas = ['Fecha', 'Tipo', 'Concepto', 'Total']
+            columnas_faltantes = [col for col in columnas_requeridas if col not in headers]
+            if columnas_faltantes:
+                return jsonify({
+                    "error": f"Columnas faltantes: {', '.join(columnas_faltantes)}",
+                    "columnas_encontradas": headers
+                }), 400
+            
+            # Mapeo de índices de columnas
+            idx_fecha = headers.index('Fecha')
+            idx_tipo = headers.index('Tipo')
+            idx_concepto = headers.index('Concepto')
+            idx_total = headers.index('Total')
+            idx_rfc_emisor = headers.index('RFC_Emisor') if 'RFC_Emisor' in headers else None
+            idx_rfc_receptor = headers.index('RFC_Receptor') if 'RFC_Receptor' in headers else None
+            idx_uuid = headers.index('UUID') if 'UUID' in headers else None
+            idx_subtotal = headers.index('Subtotal') if 'Subtotal' in headers else None
+            idx_iva = headers.index('IVA') if 'IVA' in headers else None
+            idx_forma_pago = headers.index('Forma_Pago') if 'Forma_Pago' in headers else None
+            idx_metodo_pago = headers.index('Metodo_Pago') if 'Metodo_Pago' in headers else None
+            idx_clasificacion = headers.index('Clasificacion') if 'Clasificacion' in headers else None
+            idx_deducible = headers.index('Deducible_%') if 'Deducible_%' in headers else None
+            idx_cuenta = headers.index('Cuenta_Bancaria') if 'Cuenta_Bancaria' in headers else None
+            idx_notas = headers.index('Notas') if 'Notas' in headers else None
+            idx_proveedor = headers.index('Proveedor') if 'Proveedor' in headers else None
+            
+            # Procesar filas (empezar desde la fila 2, saltando headers y ejemplo)
+            for fila_num, row in enumerate(worksheet.iter_rows(min_row=3, values_only=False), start=3):
+                # Saltar filas vacías
+                if not any(cell.value for cell in row):
+                    continue
+                
+                try:
+                    # Extraer valores
+                    fecha_val = row[idx_fecha].value
+                    tipo_val = row[idx_tipo].value
+                    concepto_val = row[idx_concepto].value
+                    total_val = row[idx_total].value
+                    
+                    # Validaciones básicas
+                    if not fecha_val:
+                        errores.append({"fila": fila_num, "error": "Fecha inválida o vacía"})
+                        continue
+                    
+                    if not tipo_val or str(tipo_val).lower() not in ['ingreso', 'gasto']:
+                        errores.append({"fila": fila_num, "error": f"Tipo inválido: {tipo_val}. Debe ser 'Ingreso' o 'Gasto'"})
+                        continue
+                    
+                    if not concepto_val:
+                        errores.append({"fila": fila_num, "error": "Concepto vacío"})
+                        continue
+                    
+                    if not total_val or float(total_val) <= 0:
+                        errores.append({"fila": fila_num, "error": f"Monto debe ser mayor a 0. Valor: {total_val}"})
+                        continue
+                    
+                    # Convertir fecha
+                    if isinstance(fecha_val, str):
+                        try:
+                            fecha = datetime.strptime(fecha_val, '%Y-%m-%d').date()
+                        except:
+                            try:
+                                fecha = datetime.strptime(fecha_val, '%d/%m/%Y').date()
+                            except:
+                                errores.append({"fila": fila_num, "error": f"Formato de fecha inválido: {fecha_val}"})
+                                continue
+                    else:
+                        fecha = fecha_val.date() if hasattr(fecha_val, 'date') else fecha_val
+                    
+                    # Preparar datos de transacción
+                    transaccion_data = {
+                        'tipo': str(tipo_val).lower(),
+                        'fecha': fecha.strftime('%Y-%m-%d'),
+                        'monto': float(total_val),
+                        'concepto': str(concepto_val),
+                        'proveedor': str(row[idx_proveedor].value) if idx_proveedor and row[idx_proveedor].value else '',
+                        'cfdi_uuid': str(row[idx_uuid].value) if idx_uuid and row[idx_uuid].value else '',
+                        'forma_pago': str(row[idx_forma_pago].value) if idx_forma_pago and row[idx_forma_pago].value else '',
+                        'metodo_pago': str(row[idx_metodo_pago].value) if idx_metodo_pago and row[idx_metodo_pago].value else '',
+                        'clasificacion': str(row[idx_clasificacion].value) if idx_clasificacion and row[idx_clasificacion].value else '',
+                        'deducible_porcentaje': int(row[idx_deducible].value) if idx_deducible and row[idx_deducible].value else None,
+                        'notas_contador': str(row[idx_notas].value) if idx_notas and row[idx_notas].value else ''
+                    }
+                    
+                    # Validar UUID único si existe
+                    if transaccion_data['cfdi_uuid']:
+                        uuid_existente = transaccion_db.obtener_transacciones({'cfdi_uuid': transaccion_data['cfdi_uuid']}, limite=1)
+                        if uuid_existente:
+                            duplicadas += 1
+                            continue
+                    
+                    # Validar forma de pago si existe
+                    if transaccion_data['forma_pago'] and not validar_forma_pago(transaccion_data['forma_pago']):
+                        errores.append({"fila": fila_num, "error": f"Forma de pago inválida: {transaccion_data['forma_pago']}"})
+                        continue
+                    
+                    # Validar clasificación si existe
+                    if transaccion_data['clasificacion']:
+                        if not validar_clasificacion(transaccion_data['clasificacion'], transaccion_data['tipo']):
+                            # Si la clasificación no es válida, intentar clasificar con IA
+                            clasificacion_ia = transaccion_db.clasificar_con_ia(transaccion_data['concepto'], transaccion_data['proveedor'])
+                            transaccion_data['clasificacion_ia'] = clasificacion_ia['clasificacion']
+                            transaccion_data['deducible_porcentaje'] = clasificacion_ia['deducible_porcentaje']
+                        else:
+                            transaccion_data['clasificacion_ia'] = transaccion_data['clasificacion']
+                            if transaccion_data['deducible_porcentaje'] is None:
+                                transaccion_data['deducible_porcentaje'] = obtener_porcentaje_deducible(transaccion_data['clasificacion'])
+                    else:
+                        # Clasificar automáticamente
+                        clasificacion_ia = transaccion_db.clasificar_con_ia(transaccion_data['concepto'], transaccion_data['proveedor'])
+                        transaccion_data['clasificacion_ia'] = clasificacion_ia['clasificacion']
+                        transaccion_data['deducible_porcentaje'] = clasificacion_ia['deducible_porcentaje']
+                    
+                    # Validar deducibilidad de efectivo
+                    if transaccion_data['tipo'] == 'gasto' and transaccion_data['forma_pago']:
+                        validacion_efectivo = validar_deducibilidad_efectivo(transaccion_data['monto'], transaccion_data['forma_pago'])
+                        if not validacion_efectivo['es_deducible']:
+                            transaccion_data['deducible_porcentaje'] = 0
+                    
+                    # Guardar transacción
+                    transaccion_id = transaccion_db.guardar_transaccion(transaccion_data)
+                    exitosas += 1
+                    
+                except Exception as e:
+                    errores.append({"fila": fila_num, "error": f"Error procesando fila: {str(e)}"})
+                    continue
+        
+        elif archivo.filename.endswith('.csv'):
+            # Leer CSV
+            import csv
+            from io import TextIOWrapper
+            
+            csv_file = TextIOWrapper(archivo.stream, encoding='utf-8')
+            reader = csv.DictReader(csv_file)
+            
+            for fila_num, row in enumerate(reader, start=2):
+                try:
+                    # Validaciones básicas
+                    if not row.get('Fecha'):
+                        errores.append({"fila": fila_num, "error": "Fecha inválida o vacía"})
+                        continue
+                    
+                    tipo_val = row.get('Tipo', '').lower()
+                    if tipo_val not in ['ingreso', 'gasto']:
+                        errores.append({"fila": fila_num, "error": f"Tipo inválido: {row.get('Tipo')}"})
+                        continue
+                    
+                    if not row.get('Concepto'):
+                        errores.append({"fila": fila_num, "error": "Concepto vacío"})
+                        continue
+                    
+                    monto = float(row.get('Total', 0) or row.get('Monto', 0))
+                    if monto <= 0:
+                        errores.append({"fila": fila_num, "error": f"Monto debe ser mayor a 0"})
+                        continue
+                    
+                    # Convertir fecha
+                    fecha_str = row['Fecha']
+                    try:
+                        fecha = datetime.strptime(fecha_str, '%Y-%m-%d').date()
+                    except:
+                        try:
+                            fecha = datetime.strptime(fecha_str, '%d/%m/%Y').date()
+                        except:
+                            errores.append({"fila": fila_num, "error": f"Formato de fecha inválido: {fecha_str}"})
+                            continue
+                    
+                    # Preparar datos
+                    transaccion_data = {
+                        'tipo': tipo_val,
+                        'fecha': fecha.strftime('%Y-%m-%d'),
+                        'monto': monto,
+                        'concepto': row.get('Concepto', ''),
+                        'proveedor': row.get('Proveedor', ''),
+                        'cfdi_uuid': row.get('UUID', ''),
+                        'forma_pago': row.get('Forma_Pago', ''),
+                        'metodo_pago': row.get('Metodo_Pago', ''),
+                        'clasificacion': row.get('Clasificacion', ''),
+                        'deducible_porcentaje': int(row['Deducible_%']) if row.get('Deducible_%') else None,
+                        'notas_contador': row.get('Notas', '')
+                    }
+                    
+                    # Validar UUID único
+                    if transaccion_data['cfdi_uuid']:
+                        uuid_existente = transaccion_db.obtener_transacciones({'cfdi_uuid': transaccion_data['cfdi_uuid']}, limite=1)
+                        if uuid_existente:
+                            duplicadas += 1
+                            continue
+                    
+                    # Validar y clasificar
+                    if transaccion_data['clasificacion'] and validar_clasificacion(transaccion_data['clasificacion'], tipo_val):
+                        transaccion_data['clasificacion_ia'] = transaccion_data['clasificacion']
+                        if transaccion_data['deducible_porcentaje'] is None:
+                            transaccion_data['deducible_porcentaje'] = obtener_porcentaje_deducible(transaccion_data['clasificacion'])
+                    else:
+                        clasificacion_ia = transaccion_db.clasificar_con_ia(transaccion_data['concepto'], transaccion_data['proveedor'])
+                        transaccion_data['clasificacion_ia'] = clasificacion_ia['clasificacion']
+                        transaccion_data['deducible_porcentaje'] = clasificacion_ia['deducible_porcentaje']
+                    
+                    # Validar efectivo
+                    if transaccion_data['tipo'] == 'gasto' and transaccion_data['forma_pago']:
+                        validacion_efectivo = validar_deducibilidad_efectivo(transaccion_data['monto'], transaccion_data['forma_pago'])
+                        if not validacion_efectivo['es_deducible']:
+                            transaccion_data['deducible_porcentaje'] = 0
+                    
+                    transaccion_id = transaccion_db.guardar_transaccion(transaccion_data)
+                    exitosas += 1
+                    
+                except Exception as e:
+                    errores.append({"fila": fila_num, "error": f"Error procesando fila: {str(e)}"})
+                    continue
+    
+    except Exception as e:
+        return jsonify({"error": f"Error al procesar archivo: {str(e)}"}), 500
+    
+    mensaje = f"{exitosas} transacciones importadas"
+    if duplicadas > 0:
+        mensaje += f", {duplicadas} duplicadas"
+    if errores:
+        mensaje += f", {len(errores)} errores"
+    
+    return jsonify({
+        "exitosas": exitosas,
+        "duplicadas": duplicadas,
+        "errores": errores,
+        "mensaje": mensaje
+    })
+
+@app.route('/api/contador/exportar-excel')
+def exportar_excel_completo_api():
+    """API para exportar reporte completo a Excel con 3 hojas"""
+    # Obtener filtros
+    filtros = {
+        'medico_id': request.args.get('medico_id', 'default'),
+        'tipo': request.args.get('tipo'),
+        'estatus_validacion': request.args.get('estatus'),
+        'fecha_desde': request.args.get('fecha_desde'),
+        'fecha_hasta': request.args.get('fecha_hasta')
+    }
+    filtros = {k: v for k, v in filtros.items() if v}
+    
+    # Obtener transacciones
+    transacciones = transaccion_db.obtener_transacciones(filtros, limite=10000)
+    
+    # Obtener estadísticas
+    stats = transaccion_db.obtener_estadisticas_financieras(
+        filtros.get('medico_id', 'default'),
+        filtros.get('fecha_desde'),
+        filtros.get('fecha_hasta')
+    )
+    
+    # Crear archivo en memoria
+    output = BytesIO()
+    workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+    
+    # Estilos
+    header_format = workbook.add_format({
+        'bold': True,
+        'bg_color': '#4472C4',
+        'font_color': '#FFFFFF',
+        'border': 1,
+        'align': 'center',
+        'valign': 'vcenter'
+    })
+    
+    date_format = workbook.add_format({'num_format': 'dd/mm/yyyy'})
+    currency_format = workbook.add_format({'num_format': '$#,##0.00'})
+    currency_bold_format = workbook.add_format({
+        'num_format': '$#,##0.00',
+        'bold': True
+    })
+    bold_format = workbook.add_format({'bold': True})
+    percent_format = workbook.add_format({'num_format': '0%'})
+    
+    # ============================================
+    # HOJA 1: TRANSACCIONES
+    # ============================================
+    worksheet1 = workbook.add_worksheet('Transacciones')
+    
+    headers1 = [
+        'ID', 'Fecha', 'Tipo', 'RFC_Emisor', 'RFC_Receptor', 'UUID',
+        'Concepto', 'Proveedor', 'Subtotal', 'IVA', 'Total',
+        'Forma_Pago', 'Metodo_Pago', 'Clasificacion',
+        'Deducible_%', 'Cuenta_Bancaria', 'Estatus', 'Notas'
+    ]
+    
+    # Escribir headers
+    for col, header in enumerate(headers1):
+        worksheet1.write(0, col, header, header_format)
+    
+    # Escribir datos
+    total_ingresos = 0
+    total_gastos = 0
+    
+    for row_num, t in enumerate(transacciones, start=1):
+        tipo = t.get('tipo', '')
+        monto = float(t.get('monto', 0))
+        
+        if tipo == 'ingreso':
+            total_ingresos += monto
+        else:
+            total_gastos += monto
+        
+        # Calcular subtotal e IVA (asumiendo IVA 0% para honorarios médicos)
+        subtotal = monto
+        iva = 0.0
+        
+        worksheet1.write(row_num, 0, t.get('id', ''))
+        worksheet1.write(row_num, 1, t.get('fecha', ''), date_format)
+        worksheet1.write(row_num, 2, tipo.upper() if tipo else '')
+        worksheet1.write(row_num, 3, '')  # RFC_Emisor
+        worksheet1.write(row_num, 4, '')  # RFC_Receptor
+        worksheet1.write(row_num, 5, t.get('cfdi_uuid', ''))
+        worksheet1.write(row_num, 6, t.get('concepto', ''))
+        worksheet1.write(row_num, 7, t.get('proveedor', ''))
+        worksheet1.write(row_num, 8, subtotal, currency_format)
+        worksheet1.write(row_num, 9, iva, currency_format)
+        worksheet1.write(row_num, 10, monto, currency_format)
+        worksheet1.write(row_num, 11, t.get('forma_pago', ''))
+        worksheet1.write(row_num, 12, t.get('metodo_pago', ''))
+        worksheet1.write(row_num, 13, t.get('clasificacion_contador') or t.get('clasificacion_ia', ''))
+        worksheet1.write(row_num, 14, t.get('deducible_porcentaje', 0))
+        worksheet1.write(row_num, 15, '')  # Cuenta_Bancaria
+        worksheet1.write(row_num, 16, t.get('estatus_validacion', '').upper())
+        worksheet1.write(row_num, 17, t.get('notas_contador', ''))
+    
+    # Totales al final
+    total_row = len(transacciones) + 2
+    worksheet1.write(total_row, 6, 'TOTALES', bold_format)
+    worksheet1.write(total_row, 8, total_ingresos + total_gastos, currency_bold_format)
+    worksheet1.write(total_row, 9, 0, currency_bold_format)
+    worksheet1.write(total_row, 10, total_ingresos + total_gastos, currency_bold_format)
+    
+    # Ajustar ancho de columnas
+    worksheet1.set_column('A:A', 8)   # ID
+    worksheet1.set_column('B:B', 12)  # Fecha
+    worksheet1.set_column('C:C', 10)  # Tipo
+    worksheet1.set_column('D:E', 15)  # RFCs
+    worksheet1.set_column('F:F', 36)  # UUID
+    worksheet1.set_column('G:G', 25)  # Concepto
+    worksheet1.set_column('H:H', 20)  # Proveedor
+    worksheet1.set_column('I:K', 12)  # Montos
+    worksheet1.set_column('L:L', 30)  # Forma_Pago
+    worksheet1.set_column('M:M', 20)  # Metodo_Pago
+    worksheet1.set_column('N:N', 25)  # Clasificacion
+    worksheet1.set_column('O:O', 12)   # Deducible_%
+    worksheet1.set_column('P:P', 15)  # Cuenta_Bancaria
+    worksheet1.set_column('Q:Q', 12)   # Estatus
+    worksheet1.set_column('R:R', 30)  # Notas
+    
+    # ============================================
+    # HOJA 2: RESUMEN
+    # ============================================
+    worksheet2 = workbook.add_worksheet('Resumen')
+    
+    # Título
+    worksheet2.write(0, 0, 'RESUMEN FINANCIERO', bold_format)
+    worksheet2.write(1, 0, '')
+    
+    # Totales principales
+    row = 2
+    worksheet2.write(row, 0, 'Total Ingresos:', bold_format)
+    worksheet2.write(row, 1, stats.get('ingresos_totales', 0), currency_format)
+    row += 1
+    
+    worksheet2.write(row, 0, 'Total Gastos:', bold_format)
+    worksheet2.write(row, 1, stats.get('gastos_totales', 0), currency_format)
+    row += 1
+    
+    worksheet2.write(row, 0, 'Utilidad (Ingresos - Gastos):', bold_format)
+    worksheet2.write(row, 1, stats.get('utilidad', 0), currency_bold_format)
+    row += 2
+    
+    # Tabla por clasificación
+    worksheet2.write(row, 0, 'CLASIFICACIÓN', header_format)
+    worksheet2.write(row, 1, 'MONTO', header_format)
+    worksheet2.write(row, 2, '% DEL TOTAL', header_format)
+    row += 1
+    
+    # Agrupar por clasificación
+    clasificaciones_dict = {}
+    total_clasificaciones = 0
+    
+    for t in transacciones:
+        clasif = t.get('clasificacion_contador') or t.get('clasificacion_ia', 'Sin clasificar')
+        monto = float(t.get('monto', 0))
+        if clasif not in clasificaciones_dict:
+            clasificaciones_dict[clasif] = 0
+        clasificaciones_dict[clasif] += monto
+        total_clasificaciones += monto
+    
+    # Ordenar por monto descendente
+    clasificaciones_sorted = sorted(clasificaciones_dict.items(), key=lambda x: x[1], reverse=True)
+    
+    for clasif, monto in clasificaciones_sorted:
+        porcentaje = (monto / total_clasificaciones * 100) if total_clasificaciones > 0 else 0
+        worksheet2.write(row, 0, clasif)
+        worksheet2.write(row, 1, monto, currency_format)
+        worksheet2.write(row, 2, porcentaje / 100, percent_format)
+        row += 1
+    
+    # Total de clasificaciones
+    worksheet2.write(row, 0, 'TOTAL', bold_format)
+    worksheet2.write(row, 1, total_clasificaciones, currency_bold_format)
+    worksheet2.write(row, 2, 1.0, percent_format)
+    
+    # Ajustar ancho de columnas
+    worksheet2.set_column('A:A', 30)
+    worksheet2.set_column('B:B', 15)
+    worksheet2.set_column('C:C', 12)
+    
+    # ============================================
+    # HOJA 3: DEDUCIBLES
+    # ============================================
+    worksheet3 = workbook.add_worksheet('Deducibles')
+    
+    headers3 = [
+        'Fecha', 'Concepto', 'Proveedor', 'Monto', '% Deducible', 'Monto Deducible'
+    ]
+    
+    # Escribir headers
+    for col, header in enumerate(headers3):
+        worksheet3.write(0, col, header, header_format)
+    
+    # Filtrar solo gastos deducibles aprobados
+    gastos_deducibles = [
+        t for t in transacciones
+        if t.get('tipo') == 'gasto' 
+        and t.get('estatus_validacion') == 'aprobado'
+        and t.get('deducible_porcentaje', 0) > 0
+    ]
+    
+    total_deducible = 0
+    
+    # Escribir datos
+    for row_num, t in enumerate(gastos_deducibles, start=1):
+        monto = float(t.get('monto', 0))
+        porcentaje = float(t.get('deducible_porcentaje', 0))
+        monto_deducible = monto * (porcentaje / 100.0)
+        total_deducible += monto_deducible
+        
+        worksheet3.write(row_num, 0, t.get('fecha', ''), date_format)
+        worksheet3.write(row_num, 1, t.get('concepto', ''))
+        worksheet3.write(row_num, 2, t.get('proveedor', ''))
+        worksheet3.write(row_num, 3, monto, currency_format)
+        worksheet3.write(row_num, 4, porcentaje / 100, percent_format)
+        worksheet3.write(row_num, 5, monto_deducible, currency_format)
+    
+    # Total deducible al final
+    total_row3 = len(gastos_deducibles) + 2
+    worksheet3.write(total_row3, 3, 'TOTAL DEDUCIBLE', bold_format)
+    worksheet3.write(total_row3, 5, total_deducible, currency_bold_format)
+    
+    # Ajustar ancho de columnas
+    worksheet3.set_column('A:A', 12)  # Fecha
+    worksheet3.set_column('B:B', 30)  # Concepto
+    worksheet3.set_column('C:C', 20)  # Proveedor
+    worksheet3.set_column('D:D', 15)  # Monto
+    worksheet3.set_column('E:E', 15)  # % Deducible
+    worksheet3.set_column('F:F', 18)  # Monto Deducible
+    
+    workbook.close()
+    output.seek(0)
+    
+    # Nombre del archivo
+    mes_ano = datetime.now().strftime('%m_%Y')
+    medico_nombre = filtros.get('medico_id', 'Doctor')
+    filename = f'Reporte_Fiscal_{medico_nombre}_{mes_ano}.xlsx'
+    
+    response = make_response(output.getvalue())
+    response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+    response.headers["Content-type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    
+    return response
+
 @app.route('/api/exportar_transacciones')
 def exportar_transacciones_api():
-    """API para exportar transacciones a CSV/Excel"""
+    """API para exportar transacciones a CSV (legacy)"""
     import csv
     from io import StringIO
-    from flask import make_response
     
     filtros = {
         'medico_id': request.args.get('medico_id', 'default'),

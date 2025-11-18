@@ -198,11 +198,25 @@
         </section>
 
         <section class="card">
+            <h3>📤 Importar desde Excel</h3>
+            <p>Sube un archivo Excel (.xlsx) o CSV con tus transacciones. El sistema validará y clasificará automáticamente.</p>
+            <form id="form-importar-excel" style="margin-top:15px;">
+                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <input type="file" id="archivo-excel" name="archivo" accept=".xlsx,.csv" required style="flex:1; min-width:200px;">
+                    <button class="button primary" type="submit">Subir e Importar</button>
+                </div>
+                <div id="resultado-importacion" style="margin-top:15px; display:none;"></div>
+            </form>
+        </section>
+
+        <section class="card">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
                 <h3>🎯 Filtros inteligentes</h3>
                 <div>
+                    <button class="button secondary small" id="btn-template-excel">⬇️ Descargar Template Excel</button>
                     <button class="button secondary small" id="btn-limpiar-filtros">Limpiar</button>
-                    <button class="button primary small" id="btn-exportar">Exportar CSV</button>
+                    <button class="button primary small" id="btn-exportar-excel">📊 Exportar Reporte Completo</button>
+                    <button class="button secondary small" id="btn-exportar">Exportar CSV</button>
                 </div>
             </div>
             <form id="filtros-form" style="margin-top:15px;">
@@ -235,7 +249,12 @@
                     </div>
                     <div>
                         <label for="clasificacion">Clasificación</label>
-                        <input type="text" name="clasificacion" id="clasificacion" placeholder="Material médico...">
+                        <select name="clasificacion" id="clasificacion">
+                            <option value="">Todas</option>
+                            {% for clasif in clasificaciones_gastos %}
+                            <option value="{{ clasif }}">{{ clasif }}</option>
+                            {% endfor %}
+                        </select>
                     </div>
                     <div>
                         <label for="limite">Límite</label>
@@ -283,12 +302,26 @@
                             <input type="text" id="tx-metodo" name="metodo_pago" placeholder="TC Santander">
                         </div>
                         <div>
-                            <label for="tx-forma">Forma de pago</label>
-                            <input type="text" id="tx-forma" name="forma_pago" placeholder="Transferencia">
+                            <label for="tx-forma">Forma de pago (SAT)</label>
+                            <select id="tx-forma" name="forma_pago" required>
+                                <option value="">Seleccionar...</option>
+                                {% for forma in formas_pago %}
+                                <option value="{{ forma }}">{{ forma }}</option>
+                                {% endfor %}
+                            </select>
                         </div>
                         <div>
                             <label for="tx-cfdi">UUID CFDI</label>
                             <input type="text" id="tx-cfdi" name="cfdi_uuid" placeholder="Opcional">
+                        </div>
+                        <div>
+                            <label for="tx-clasificacion">Clasificación Fiscal</label>
+                            <select id="tx-clasificacion" name="clasificacion">
+                                <option value="">Seleccionar...</option>
+                                {% for clasif in clasificaciones_gastos %}
+                                <option value="{{ clasif }}">{{ clasif }}</option>
+                                {% endfor %}
+                            </select>
                         </div>
                     </div>
                     <div style="display:flex; gap:10px; margin-top:15px; flex-wrap:wrap;">
@@ -319,7 +352,12 @@
                         </div>
                         <div>
                             <label for="validacion-clasificacion">Clasificación</label>
-                            <input type="text" id="validacion-clasificacion" name="clasificacion" required>
+                            <select id="validacion-clasificacion" name="clasificacion" required>
+                                <option value="">Seleccionar...</option>
+                                {% for clasif in clasificaciones_gastos %}
+                                <option value="{{ clasif }}">{{ clasif }}</option>
+                                {% endfor %}
+                            </select>
                         </div>
                         <div>
                             <label for="validacion-deducible">% Deducible</label>
@@ -350,6 +388,7 @@
                             <th>Concepto</th>
                             <th>Proveedor</th>
                             <th>Monto</th>
+                            <th>Forma de Pago</th>
                             <th>Clasificación</th>
                             <th>Estatus</th>
                             <th>Acciones</th>
@@ -411,11 +450,16 @@
             crear: "/api/transacciones",
             validar: (id) => `/api/transacciones/${id}/validar`,
             clasificar: "/api/clasificar_gasto",
-            exportar: "/api/exportar_transacciones"
+            exportar: "/api/exportar_transacciones",
+            exportarExcel: "/api/contador/exportar-excel",
+            templateExcel: "/api/contador/template-excel",
+            importarExcel: "/api/contador/importar-excel"
         };
 
         const initialStats = {{ stats|tojson }};
         let transaccionesData = {{ transacciones|tojson }};
+        const clasificacionesIngresos = {{ clasificaciones_ingresos|tojson }};
+        const clasificacionesGastos = {{ clasificaciones_gastos|tojson }};
 
         const refs = {};
 
@@ -423,7 +467,9 @@
             refs.loadingBar = document.getElementById("loading-bar");
             refs.toast = document.getElementById("toast");
             refs.filtrosForm = document.getElementById("filtros-form");
+            refs.btnTemplateExcel = document.getElementById("btn-template-excel");
             refs.btnLimpiar = document.getElementById("btn-limpiar-filtros");
+            refs.btnExportarExcel = document.getElementById("btn-exportar-excel");
             refs.btnExportar = document.getElementById("btn-exportar");
             refs.btnRefrescarStats = document.getElementById("btn-refrescar-stats");
             refs.tableBody = document.querySelector("#tabla-transacciones tbody");
@@ -431,6 +477,10 @@
             refs.formTransaccion = document.getElementById("form-transaccion");
             refs.btnClasificarIA = document.getElementById("btn-clasificar-ia");
             refs.iaBadge = document.getElementById("ia-clasificacion");
+            refs.txClasificacion = document.getElementById("tx-clasificacion");
+            refs.txTipo = document.getElementById("tx-tipo");
+            refs.txFormaPago = document.getElementById("tx-forma");
+            refs.txMonto = document.getElementById("tx-monto");
             refs.formValidacion = document.getElementById("form-validacion");
             refs.validacionEmpty = document.getElementById("validacion-empty");
             refs.validacionTitle = document.getElementById("validacion-title");
@@ -439,19 +489,71 @@
             refs.validacionDeducible = document.getElementById("validacion-deducible");
             refs.validacionNotas = document.getElementById("validacion-notas");
             refs.validacionEstatus = document.getElementById("validacion-estatus");
+            refs.formImportarExcel = document.getElementById("form-importar-excel");
+            refs.resultadoImportacion = document.getElementById("resultado-importacion");
 
             renderStats(initialStats || {});
             renderTransacciones(transaccionesData || []);
             setDefaultDate();
 
             refs.filtrosForm.addEventListener("submit", handleFiltrosSubmit);
+            refs.btnTemplateExcel.addEventListener("click", handleDescargarTemplate);
             refs.btnLimpiar.addEventListener("click", handleLimpiarFiltros);
+            refs.btnExportarExcel.addEventListener("click", handleExportarExcel);
             refs.btnExportar.addEventListener("click", handleExportar);
             refs.btnRefrescarStats.addEventListener("click", () => refreshStats(new FormData(refs.filtrosForm)));
             refs.btnClasificarIA.addEventListener("click", handleClasificacionIA);
             refs.formTransaccion.addEventListener("submit", handleCrearTransaccion);
             refs.formValidacion.addEventListener("submit", handleValidacion);
+            refs.formImportarExcel.addEventListener("submit", handleImportarExcel);
+            
+            // Actualizar dropdown de clasificación cuando cambia el tipo
+            if (refs.txTipo) {
+                refs.txTipo.addEventListener("change", actualizarClasificacionesDropdown);
+            }
+            
+            // Validar efectivo > $2000 en tiempo real
+            if (refs.txFormaPago && refs.txMonto) {
+                refs.txFormaPago.addEventListener("change", validarEfectivoEnTiempoReal);
+                refs.txMonto.addEventListener("input", validarEfectivoEnTiempoReal);
+            }
         });
+        
+        function validarEfectivoEnTiempoReal() {
+            const formaPago = refs.txFormaPago?.value || "";
+            const monto = parseFloat(refs.txMonto?.value || 0);
+            const tipo = refs.txTipo?.value || "gasto";
+            
+            // Ocultar warning previo
+            const warningExistente = document.getElementById("warning-efectivo");
+            if (warningExistente) {
+                warningExistente.remove();
+            }
+            
+            // Mostrar warning si aplica
+            if (tipo === "gasto" && formaPago.startsWith("01 -") && monto > 2000) {
+                const warning = document.createElement("div");
+                warning.id = "warning-efectivo";
+                warning.style.cssText = "background: #fff3cd; border: 2px solid #ffc107; border-radius: 8px; padding: 12px; margin-top: 10px; color: #856404; font-size: 0.9em;";
+                warning.textContent = "⚠️ Gastos en efectivo mayores a $2,000 no son deducibles según la legislación fiscal mexicana.";
+                refs.txMonto.parentElement.appendChild(warning);
+            }
+        }
+        
+        function actualizarClasificacionesDropdown() {
+            const tipo = refs.txTipo.value;
+            const select = refs.txClasificacion;
+            if (!select) return;
+            
+            const clasificaciones = tipo === "ingreso" ? clasificacionesIngresos : clasificacionesGastos;
+            select.innerHTML = '<option value="">Seleccionar...</option>';
+            clasificaciones.forEach(clasif => {
+                const option = document.createElement("option");
+                option.value = clasif;
+                option.textContent = clasif;
+                select.appendChild(option);
+            });
+        }
 
         function setLoading(active) {
             if (!refs.loadingBar) return;
@@ -578,6 +680,15 @@
             refs.filtrosForm.dispatchEvent(new Event("submit"));
         }
 
+        function handleDescargarTemplate() {
+            window.location.href = api.templateExcel;
+        }
+
+        function handleExportarExcel() {
+            const params = new URLSearchParams(new FormData(refs.filtrosForm));
+            window.location.href = `${api.exportarExcel}?${params.toString()}`;
+        }
+
         function handleExportar() {
             const params = new URLSearchParams(new FormData(refs.filtrosForm));
             window.open(`${api.exportar}?${params.toString()}`, "_blank");
@@ -601,6 +712,10 @@
                 const data = await res.json();
                 refs.iaBadge.textContent = `${data.clasificacion} (${data.deducible_porcentaje}% deducible)`;
                 refs.iaBadge.classList.remove("hidden");
+                // Pre-seleccionar en el dropdown si existe
+                if (refs.txClasificacion && data.clasificacion) {
+                    refs.txClasificacion.value = data.clasificacion;
+                }
                 showToast("Clasificación sugerida lista");
             } catch (error) {
                 console.error(error);
@@ -671,6 +786,76 @@
             const today = new Date().toISOString().split("T")[0];
             const input = document.getElementById("tx-fecha");
             if (input && !input.value) input.value = today;
+        }
+
+        async function handleImportarExcel(event) {
+            event.preventDefault();
+            const formData = new FormData(refs.formImportarExcel);
+            setLoading(true);
+            refs.resultadoImportacion.style.display = "none";
+            
+            try {
+                const res = await fetch(api.importarExcel, {
+                    method: "POST",
+                    body: formData
+                });
+                
+                const data = await res.json();
+                
+                if (!res.ok) {
+                    throw new Error(data.error || "Error al importar");
+                }
+                
+                // Mostrar resultado
+                let html = `<div style="padding:15px; border-radius:8px; `;
+                if (data.errores && data.errores.length > 0) {
+                    html += `background:#fff3cd; border:2px solid #ffc107;">`;
+                } else {
+                    html += `background:#d1fae5; border:2px solid #10b981;">`;
+                }
+                html += `<h4 style="margin-top:0;">Resultado de la importación</h4>`;
+                html += `<p><strong>${data.mensaje}</strong></p>`;
+                
+                if (data.exitosas > 0) {
+                    html += `<p>✅ <strong>${data.exitosas}</strong> transacciones importadas correctamente</p>`;
+                }
+                if (data.duplicadas > 0) {
+                    html += `<p>⚠️ <strong>${data.duplicadas}</strong> transacciones duplicadas (UUID ya existe)</p>`;
+                }
+                if (data.errores && data.errores.length > 0) {
+                    html += `<p>❌ <strong>${data.errores.length}</strong> errores encontrados:</p>`;
+                    html += `<ul style="margin-top:10px; max-height:200px; overflow-y:auto;">`;
+                    data.errores.slice(0, 10).forEach(err => {
+                        html += `<li>Fila ${err.fila}: ${err.error}</li>`;
+                    });
+                    if (data.errores.length > 10) {
+                        html += `<li>... y ${data.errores.length - 10} errores más</li>`;
+                    }
+                    html += `</ul>`;
+                }
+                html += `</div>`;
+                
+                refs.resultadoImportacion.innerHTML = html;
+                refs.resultadoImportacion.style.display = "block";
+                
+                // Actualizar tabla y KPIs si hubo importaciones exitosas
+                if (data.exitosas > 0) {
+                    refs.filtrosForm.dispatchEvent(new Event("submit"));
+                    refreshStats(new FormData(refs.filtrosForm));
+                    showToast(`${data.exitosas} transacciones importadas correctamente`);
+                }
+                
+                // Limpiar formulario
+                refs.formImportarExcel.reset();
+                
+            } catch (error) {
+                console.error(error);
+                showToast(error.message || "No se pudo importar el archivo", "error");
+                refs.resultadoImportacion.innerHTML = `<div style="padding:15px; background:#fee2e2; border:2px solid #ef4444; border-radius:8px; color:#991b1b;"><strong>Error:</strong> ${error.message}</div>`;
+                refs.resultadoImportacion.style.display = "block";
+            } finally {
+                setLoading(false);
+            }
         }
     </script>
 </body>
