@@ -167,3 +167,284 @@ class ConsultaDB:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute('DELETE FROM consultas WHERE id = ?', (consulta_id,))
             return cursor.rowcount > 0
+
+class TransaccionDB:
+    """Gestión de transacciones financieras (ingresos y gastos) para el módulo del contador"""
+    
+    def __init__(self, db_path: str = "consultas.db"):
+        self.db_path = db_path
+        self.init_database()
+    
+    def init_database(self):
+        """Inicializa las tablas de transacciones financieras"""
+        with sqlite3.connect(self.db_path) as conn:
+            # Tabla de transacciones (ingresos y gastos)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS transacciones (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medico_id TEXT DEFAULT 'default',
+                    tipo TEXT NOT NULL CHECK(tipo IN ('ingreso', 'gasto')),
+                    fecha DATE NOT NULL,
+                    monto REAL NOT NULL,
+                    concepto TEXT NOT NULL,
+                    proveedor TEXT,
+                    cfdi_uuid TEXT,
+                    cfdi_xml_path TEXT,
+                    cfdi_pdf_path TEXT,
+                    cfdi_vigente BOOLEAN DEFAULT 1,
+                    clasificacion_ia TEXT,
+                    clasificacion_contador TEXT,
+                    deducible_porcentaje INTEGER DEFAULT 0,
+                    estatus_validacion TEXT DEFAULT 'pendiente' CHECK(estatus_validacion IN ('pendiente', 'aprobado', 'rechazado', 'ajustado')),
+                    notas_contador TEXT,
+                    metodo_pago TEXT,
+                    forma_pago TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    validado_por TEXT,
+                    validado_at DATETIME
+                )
+            ''')
+            
+            # Tabla de reglas de clasificación aprendidas
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS reglas_clasificacion (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medico_id TEXT DEFAULT 'default',
+                    patron_concepto TEXT NOT NULL,
+                    proveedor TEXT,
+                    clasificacion TEXT NOT NULL,
+                    deducible_porcentaje INTEGER DEFAULT 0,
+                    frecuencia_uso INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Índices para búsquedas rápidas
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_fecha ON transacciones(fecha)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_tipo ON transacciones(tipo)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_estatus ON transacciones(estatus_validacion)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_trans_medico ON transacciones(medico_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_reglas_medico ON reglas_clasificacion(medico_id)')
+            
+            conn.commit()
+    
+    def guardar_transaccion(self, transaccion_data: Dict) -> int:
+        """Guarda una nueva transacción"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                INSERT INTO transacciones (
+                    medico_id, tipo, fecha, monto, concepto, proveedor,
+                    cfdi_uuid, cfdi_xml_path, cfdi_pdf_path, cfdi_vigente,
+                    clasificacion_ia, deducible_porcentaje, metodo_pago, forma_pago
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                transaccion_data.get('medico_id', 'default'),
+                transaccion_data.get('tipo'),
+                transaccion_data.get('fecha'),
+                transaccion_data.get('monto'),
+                transaccion_data.get('concepto'),
+                transaccion_data.get('proveedor', ''),
+                transaccion_data.get('cfdi_uuid', ''),
+                transaccion_data.get('cfdi_xml_path', ''),
+                transaccion_data.get('cfdi_pdf_path', ''),
+                transaccion_data.get('cfdi_vigente', 1),
+                transaccion_data.get('clasificacion_ia', ''),
+                transaccion_data.get('deducible_porcentaje', 0),
+                transaccion_data.get('metodo_pago', ''),
+                transaccion_data.get('forma_pago', '')
+            ))
+            return cursor.lastrowid
+    
+    def obtener_transacciones(self, filtros: Dict = None, limite: int = 100) -> List[Dict]:
+        """Obtiene transacciones con filtros opcionales"""
+        query = 'SELECT * FROM transacciones WHERE medico_id = ?'
+        params = [filtros.get('medico_id', 'default') if filtros else 'default']
+        
+        if filtros:
+            if filtros.get('tipo'):
+                query += ' AND tipo = ?'
+                params.append(filtros['tipo'])
+            if filtros.get('estatus_validacion'):
+                query += ' AND estatus_validacion = ?'
+                params.append(filtros['estatus_validacion'])
+            if filtros.get('fecha_desde'):
+                query += ' AND fecha >= ?'
+                params.append(filtros['fecha_desde'])
+            if filtros.get('fecha_hasta'):
+                query += ' AND fecha <= ?'
+                params.append(filtros['fecha_hasta'])
+            if filtros.get('clasificacion'):
+                query += ' AND (clasificacion_ia = ? OR clasificacion_contador = ?)'
+                params.extend([filtros['clasificacion'], filtros['clasificacion']])
+        
+        query += ' ORDER BY fecha DESC LIMIT ?'
+        params.append(limite)
+        
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def validar_transaccion(self, transaccion_id: int, validacion_data: Dict) -> bool:
+        """Valida una transacción (aprueba, rechaza o ajusta)"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                UPDATE transacciones 
+                SET estatus_validacion = ?,
+                    clasificacion_contador = ?,
+                    deducible_porcentaje = ?,
+                    notas_contador = ?,
+                    validado_por = ?,
+                    validado_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (
+                validacion_data.get('estatus', 'aprobado'),
+                validacion_data.get('clasificacion', ''),
+                validacion_data.get('deducible_porcentaje', 0),
+                validacion_data.get('notas', ''),
+                validacion_data.get('validado_por', 'contador'),
+                transaccion_id
+            ))
+            
+            # Si se aprueba, aprender la regla
+            if validacion_data.get('estatus') == 'aprobado' and validacion_data.get('clasificacion'):
+                self._aprender_regla(transaccion_id, validacion_data)
+            
+            return cursor.rowcount > 0
+    
+    def _aprender_regla(self, transaccion_id: int, validacion_data: Dict):
+        """Aprende una regla de clasificación basada en la validación del contador"""
+        with sqlite3.connect(self.db_path) as conn:
+            # Obtener la transacción
+            cursor = conn.execute('SELECT concepto, proveedor, medico_id FROM transacciones WHERE id = ?', (transaccion_id,))
+            trans = cursor.fetchone()
+            if not trans:
+                return
+            
+            concepto, proveedor, medico_id = trans
+            
+            # Verificar si ya existe una regla similar
+            cursor = conn.execute('''
+                SELECT id, frecuencia_uso FROM reglas_clasificacion 
+                WHERE medico_id = ? AND patron_concepto = ? AND proveedor = ?
+            ''', (medico_id, concepto, proveedor or ''))
+            
+            regla_existente = cursor.fetchone()
+            
+            if regla_existente:
+                # Incrementar frecuencia
+                conn.execute('''
+                    UPDATE reglas_clasificacion 
+                    SET frecuencia_uso = frecuencia_uso + 1,
+                        clasificacion = ?,
+                        deducible_porcentaje = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (validacion_data['clasificacion'], validacion_data.get('deducible_porcentaje', 0), regla_existente[0]))
+            else:
+                # Crear nueva regla
+                conn.execute('''
+                    INSERT INTO reglas_clasificacion (
+                        medico_id, patron_concepto, proveedor, clasificacion, deducible_porcentaje
+                    ) VALUES (?, ?, ?, ?, ?)
+                ''', (medico_id, concepto, proveedor or '', validacion_data['clasificacion'], validacion_data.get('deducible_porcentaje', 0)))
+            
+            conn.commit()
+    
+    def clasificar_con_ia(self, concepto: str, proveedor: str = '', medico_id: str = 'default') -> Dict:
+        """Clasifica una transacción usando reglas aprendidas"""
+        with sqlite3.connect(self.db_path) as conn:
+            # Buscar regla exacta
+            cursor = conn.execute('''
+                SELECT clasificacion, deducible_porcentaje, frecuencia_uso
+                FROM reglas_clasificacion 
+                WHERE medico_id = ? AND patron_concepto = ? AND proveedor = ?
+                ORDER BY frecuencia_uso DESC
+                LIMIT 1
+            ''', (medico_id, concepto, proveedor))
+            
+            regla = cursor.fetchone()
+            
+            if regla:
+                return {
+                    'clasificacion': regla[0],
+                    'deducible_porcentaje': regla[1],
+                    'confianza': 'alta',
+                    'metodo': 'regla_aprendida'
+                }
+            
+            # Buscar regla por similitud de concepto
+            cursor = conn.execute('''
+                SELECT clasificacion, deducible_porcentaje, frecuencia_uso
+                FROM reglas_clasificacion 
+                WHERE medico_id = ? AND (
+                    patron_concepto LIKE ? OR ? LIKE patron_concepto
+                )
+                ORDER BY frecuencia_uso DESC
+                LIMIT 1
+            ''', (medico_id, f'%{concepto}%', f'%{concepto}%'))
+            
+            regla_similar = cursor.fetchone()
+            
+            if regla_similar:
+                return {
+                    'clasificacion': regla_similar[0],
+                    'deducible_porcentaje': regla_similar[1],
+                    'confianza': 'media',
+                    'metodo': 'similitud'
+                }
+            
+            # Sin regla, usar clasificación por defecto
+            return {
+                'clasificacion': 'Sin clasificar',
+                'deducible_porcentaje': 0,
+                'confianza': 'baja',
+                'metodo': 'default'
+            }
+    
+    def obtener_estadisticas_financieras(self, medico_id: str = 'default', fecha_desde: str = None, fecha_hasta: str = None) -> Dict:
+        """Obtiene estadísticas financieras para el dashboard del contador"""
+        with sqlite3.connect(self.db_path) as conn:
+            query_base = 'SELECT tipo, SUM(monto) as total FROM transacciones WHERE medico_id = ?'
+            params = [medico_id]
+            
+            if fecha_desde:
+                query_base += ' AND fecha >= ?'
+                params.append(fecha_desde)
+            if fecha_hasta:
+                query_base += ' AND fecha <= ?'
+                params.append(fecha_hasta)
+            
+            query_base += ' GROUP BY tipo'
+            
+            cursor = conn.execute(query_base, params)
+            totales = {row[0]: row[1] for row in cursor.fetchall()}
+            
+            # Transacciones pendientes de validación
+            cursor = conn.execute('''
+                SELECT COUNT(*) FROM transacciones 
+                WHERE medico_id = ? AND estatus_validacion = 'pendiente'
+            ''', (medico_id,))
+            pendientes = cursor.fetchone()[0]
+            
+            # Top gastos deducibles
+            cursor = conn.execute('''
+                SELECT clasificacion_contador, SUM(monto * deducible_porcentaje / 100.0) as monto_deducible
+                FROM transacciones 
+                WHERE medico_id = ? AND tipo = 'gasto' AND estatus_validacion = 'aprobado'
+                GROUP BY clasificacion_contador
+                ORDER BY monto_deducible DESC
+                LIMIT 5
+            ''', (medico_id,))
+            top_deducibles = [{'clasificacion': row[0], 'monto': row[1]} for row in cursor.fetchall()]
+            
+            return {
+                'ingresos_totales': totales.get('ingreso', 0),
+                'gastos_totales': totales.get('gasto', 0),
+                'utilidad': totales.get('ingreso', 0) - totales.get('gasto', 0),
+                'pendientes_validacion': pendientes,
+                'top_deducibles': top_deducibles
+            }

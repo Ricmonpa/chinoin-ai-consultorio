@@ -4,7 +4,7 @@ import sys
 import json
 from flask import Flask, render_template, request, jsonify
 import requests
-from database import ConsultaDB
+from database import ConsultaDB, TransaccionDB
 from dotenv import load_dotenv
 
 # Cargar variables de entorno
@@ -149,6 +149,7 @@ def call_gemini_api(prompt, api_key, force_json=False):
 
 # Inicializar base de datos
 db = ConsultaDB()
+transaccion_db = TransaccionDB()
 
 NORMAS_CONTABLES_BASE = """
 Base de conocimiento sobre normativas fiscales y legales para médicos en México:
@@ -693,48 +694,188 @@ Responde en formato JSON con esta estructura:
             "raw_response": soap_response_text
         }), 500
 
-@app.route('/asesoria')
-def vista_asesoria():
-    return render_template('asesoria.html')
+@app.route('/contador')
+def vista_contador():
+    """Vista principal del módulo del contador con grid dinámico"""
+    # Obtener estadísticas financieras
+    stats = transaccion_db.obtener_estadisticas_financieras()
+    
+    # Obtener transacciones recientes
+    transacciones = transaccion_db.obtener_transacciones(limite=50)
+    
+    return render_template('contador.html', stats=stats, transacciones=transacciones)
 
 @app.route('/debug_soap')
 def vista_debug_soap():
     return render_template('debug_soap.html')
 
-@app.route('/consultar_norma', methods=['POST'])
-def consultar_norma():
+@app.route('/api/transacciones', methods=['GET'])
+def obtener_transacciones_api():
+    """API para obtener transacciones con filtros"""
+    filtros = {
+        'medico_id': request.args.get('medico_id', 'default'),
+        'tipo': request.args.get('tipo'),
+        'estatus_validacion': request.args.get('estatus'),
+        'fecha_desde': request.args.get('fecha_desde'),
+        'fecha_hasta': request.args.get('fecha_hasta'),
+        'clasificacion': request.args.get('clasificacion')
+    }
+    
+    # Remover filtros vacíos
+    filtros = {k: v for k, v in filtros.items() if v}
+    
+    limite = int(request.args.get('limite', 100))
+    transacciones = transaccion_db.obtener_transacciones(filtros, limite)
+    
+    return jsonify(transacciones)
+
+@app.route('/api/transacciones', methods=['POST'])
+def crear_transaccion_api():
+    """API para crear una nueva transacción"""
     if not request.json:
-        return jsonify({"error": "No se recibió datos JSON."}), 400
-    pregunta = request.json.get('pregunta', '')
+        return jsonify({"error": "No se recibió datos JSON"}), 400
     
-    if not pregunta:
-        return jsonify({"error": "No se recibió pregunta."}), 400
+    # Clasificar automáticamente con IA
+    concepto = request.json.get('concepto', '')
+    proveedor = request.json.get('proveedor', '')
     
-    try:
-        prompt = """Eres un asesor experto en normativas fiscales y legales para médicos en México.
+    clasificacion_ia = transaccion_db.clasificar_con_ia(concepto, proveedor)
+    
+    transaccion_data = {
+        **request.json,
+        'clasificacion_ia': clasificacion_ia['clasificacion'],
+        'deducible_porcentaje': clasificacion_ia['deducible_porcentaje']
+    }
+    
+    transaccion_id = transaccion_db.guardar_transaccion(transaccion_data)
+    
+    return jsonify({
+        "id": transaccion_id,
+        "clasificacion_sugerida": clasificacion_ia,
+        "message": "Transacción creada exitosamente"
+    }), 201
 
-Responde a la siguiente pregunta de un médico mexicano de forma clara, precisa y profesional.
+@app.route('/api/transacciones/<int:transaccion_id>/validar', methods=['POST'])
+def validar_transaccion_api(transaccion_id):
+    """API para validar una transacción (aprobar/rechazar/ajustar)"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON"}), 400
+    
+    validacion_data = {
+        'estatus': request.json.get('estatus', 'aprobado'),
+        'clasificacion': request.json.get('clasificacion'),
+        'deducible_porcentaje': request.json.get('deducible_porcentaje', 0),
+        'notas': request.json.get('notas', ''),
+        'validado_por': request.json.get('validado_por', 'contador')
+    }
+    
+    success = transaccion_db.validar_transaccion(transaccion_id, validacion_data)
+    
+    if success:
+        return jsonify({"message": "Transacción validada correctamente"})
+    else:
+        return jsonify({"error": "No se pudo validar la transacción"}), 400
 
-CONTEXTO NORMATIVO:
-""" + NORMAS_CONTABLES_BASE + """
+@app.route('/api/clasificar_gasto', methods=['POST'])
+def clasificar_gasto_api():
+    """API para clasificar un gasto usando IA (con Gemini para casos nuevos)"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON"}), 400
+    
+    concepto = request.json.get('concepto', '')
+    proveedor = request.json.get('proveedor', '')
+    monto = request.json.get('monto', 0)
+    
+    # Primero intentar con reglas aprendidas
+    clasificacion_reglas = transaccion_db.clasificar_con_ia(concepto, proveedor)
+    
+    # Si la confianza es baja, usar Gemini para clasificación inteligente
+    if clasificacion_reglas['confianza'] == 'baja' and GEMINI_API_KEY:
+        prompt = f"""Eres un experto contador especializado en fiscalidad médica en México.
 
-PREGUNTA DEL MÉDICO:
-""" + pregunta + """
+Analiza el siguiente gasto y proporciona:
+1. Clasificación fiscal (ej: "Deducible Operativo", "Deducible Parcial", "No Deducible", "Material Médico", "Servicios Profesionales", etc.)
+2. Porcentaje de deducibilidad (0-100)
+3. Justificación breve
 
-Proporciona una respuesta práctica y específica. Si mencionas alguna ley o norma, cita el nombre completo. 
-Si recomiendas consultar a un especialista para casos complejos, indícalo.
+GASTO:
+- Concepto: {concepto}
+- Proveedor: {proveedor}
+- Monto: ${monto}
 
-Responde en español de México de forma profesional pero accesible."""
+CONTEXTO FISCAL:
+{NORMAS_CONTABLES_BASE}
 
-        response_text = call_gemini_api(prompt, GEMINI_API_KEY)
+Responde en formato JSON:
+{{
+  "clasificacion": "texto",
+  "deducible_porcentaje": numero,
+  "justificacion": "texto breve"
+}}"""
         
-        if not response_text:
-            return jsonify({"error": "No se pudo obtener respuesta de la IA"}), 500
-        
-        return jsonify({"respuesta": response_text})
-        
-    except Exception as e:
-        return jsonify({"error": "Error al consultar IA: " + str(e)}), 500
+        try:
+            response_text = call_gemini_api(prompt, GEMINI_API_KEY, force_json=True)
+            if response_text:
+                resultado_ia = json.loads(response_text)
+                return jsonify({
+                    **resultado_ia,
+                    'confianza': 'alta',
+                    'metodo': 'gemini_ia'
+                })
+        except Exception as e:
+            print(f"Error en clasificación con Gemini: {e}")
+    
+    return jsonify(clasificacion_reglas)
+
+@app.route('/api/estadisticas_financieras')
+def estadisticas_financieras_api():
+    """API para obtener estadísticas financieras del contador"""
+    fecha_desde = request.args.get('fecha_desde')
+    fecha_hasta = request.args.get('fecha_hasta')
+    medico_id = request.args.get('medico_id', 'default')
+    
+    stats = transaccion_db.obtener_estadisticas_financieras(medico_id, fecha_desde, fecha_hasta)
+    return jsonify(stats)
+
+@app.route('/api/exportar_transacciones')
+def exportar_transacciones_api():
+    """API para exportar transacciones a CSV/Excel"""
+    import csv
+    from io import StringIO
+    from flask import make_response
+    
+    filtros = {
+        'medico_id': request.args.get('medico_id', 'default'),
+        'tipo': request.args.get('tipo'),
+        'estatus_validacion': request.args.get('estatus'),
+        'fecha_desde': request.args.get('fecha_desde'),
+        'fecha_hasta': request.args.get('fecha_hasta')
+    }
+    filtros = {k: v for k, v in filtros.items() if v}
+    
+    transacciones = transaccion_db.obtener_transacciones(filtros, limite=10000)
+    
+    # Crear CSV
+    si = StringIO()
+    writer = csv.writer(si)
+    
+    # Encabezados
+    writer.writerow(['ID', 'Fecha', 'Tipo', 'Concepto', 'Proveedor', 'Monto', 
+                     'Clasificación', 'Deducible %', 'Estatus', 'Notas'])
+    
+    # Datos
+    for t in transacciones:
+        writer.writerow([
+            t['id'], t['fecha'], t['tipo'], t['concepto'], t.get('proveedor', ''),
+            t['monto'], t.get('clasificacion_contador') or t.get('clasificacion_ia', ''),
+            t['deducible_porcentaje'], t['estatus_validacion'], t.get('notas_contador', '')
+        ])
+    
+    output = make_response(si.getvalue())
+    output.headers["Content-Disposition"] = "attachment; filename=transacciones.csv"
+    output.headers["Content-type"] = "text/csv"
+    
+    return output
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5555))

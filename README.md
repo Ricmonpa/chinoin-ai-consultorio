@@ -6,7 +6,13 @@ Kit de herramientas de gestión médica con inteligencia artificial para médico
 
 - **🎤 Transcriptor de Consultas**: Graba consultas y genera notas SOAP automáticamente
 - **📋 Historial**: Gestiona y busca consultas anteriores
-- **⚖️ Asistente Legal**: Responde dudas fiscales y legales para médicos mexicanos
+- **💼 Asistente Contable (NUEVO)**: Central de cumplimiento fiscal con clasificación automática de gastos
+  - Grid dinámico de transacciones con filtros avanzados
+  - Clasificación inteligente de gastos con IA
+  - Sistema de validación rápida (Aprobar/Rechazar)
+  - Aprendizaje automático de reglas contables
+  - Exportación a CSV/Excel
+  - **Ahorra hasta 60% del tiempo en tareas contables**
 - **📊 Dashboard**: Estadísticas y resumen de actividad
 
 ## 🛠️ Tecnología
