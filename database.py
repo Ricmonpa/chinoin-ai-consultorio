@@ -451,3 +451,220 @@ class TransaccionDB:
                 'pendientes_validacion': pendientes,
                 'top_deducibles': top_deducibles
             }
+
+class SeguroDB:
+    """Gestión de datos de seguros médicos (credenciales, tabuladores, informes)"""
+    
+    def __init__(self, db_path: str = "consultas.db"):
+        self.db_path = db_path
+        self.init_database()
+    
+    def init_database(self):
+        """Inicializa las tablas de seguros"""
+        with sqlite3.connect(self.db_path) as conn:
+            # Tabla de credenciales de seguro procesadas
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS credenciales_seguros (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medico_id TEXT DEFAULT 'default',
+                    paciente_id INTEGER,
+                    paciente_nombre TEXT,
+                    aseguradora TEXT NOT NULL,
+                    numero_poliza TEXT NOT NULL,
+                    plan_nombre TEXT,
+                    nivel_hospitalario TEXT,
+                    deducible_estimado REAL,
+                    coaseguro_porcentaje REAL,
+                    hospitales_red TEXT,
+                    imagen_path TEXT,
+                    datos_extractos TEXT,
+                    fecha_procesamiento DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Tabla de tabuladores cargados (PDFs)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS tabuladores (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    aseguradora TEXT NOT NULL,
+                    plan_nombre TEXT,
+                    tipo_documento TEXT CHECK(tipo_documento IN ('tabulador', 'condiciones_generales')),
+                    archivo_path TEXT NOT NULL,
+                    archivo_hash TEXT,
+                    fecha_vigencia DATE,
+                    contenido_texto TEXT,
+                    contenido_embedding TEXT,
+                    fecha_carga DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    activo BOOLEAN DEFAULT 1
+                )
+            ''')
+            
+            # Tabla de informes médicos generados
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS informes_medicos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    consulta_id INTEGER,
+                    credencial_seguro_id INTEGER,
+                    aseguradora TEXT NOT NULL,
+                    paciente_nombre TEXT,
+                    numero_poliza TEXT,
+                    diagnostico TEXT,
+                    procedimiento TEXT,
+                    codigo_cpt TEXT,
+                    codigo_cie10 TEXT,
+                    informe_pdf_path TEXT,
+                    fecha_generacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Tabla de consultas de honorarios (búsquedas en tabuladores)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS consultas_honorarios (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medico_id TEXT DEFAULT 'default',
+                    aseguradora TEXT,
+                    plan_nombre TEXT,
+                    procedimiento TEXT,
+                    codigo_cpt TEXT,
+                    monto_encontrado REAL,
+                    fuente_tabulador_id INTEGER,
+                    fecha_consulta DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Índices
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_credencial_aseguradora ON credenciales_seguros(aseguradora)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_credencial_poliza ON credenciales_seguros(numero_poliza)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_credencial_paciente ON credenciales_seguros(paciente_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_tabulador_aseguradora ON tabuladores(aseguradora)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_tabulador_activo ON tabuladores(activo)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_informe_consulta ON informes_medicos(consulta_id)')
+            
+            conn.commit()
+    
+    def guardar_credencial(self, credencial_data: Dict) -> int:
+        """Guarda una credencial de seguro procesada"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                INSERT INTO credenciales_seguros (
+                    medico_id, paciente_id, paciente_nombre,
+                    aseguradora, numero_poliza, plan_nombre, nivel_hospitalario,
+                    deducible_estimado, coaseguro_porcentaje, hospitales_red,
+                    imagen_path, datos_extractos
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                credencial_data.get('medico_id', 'default'),
+                credencial_data.get('paciente_id'),
+                credencial_data.get('paciente_nombre', ''),
+                credencial_data.get('aseguradora', ''),
+                credencial_data.get('numero_poliza', ''),
+                credencial_data.get('plan_nombre', ''),
+                credencial_data.get('nivel_hospitalario', ''),
+                credencial_data.get('deducible_estimado'),
+                credencial_data.get('coaseguro_porcentaje'),
+                credencial_data.get('hospitales_red', ''),
+                credencial_data.get('imagen_path', ''),
+                credencial_data.get('datos_extractos', '')
+            ))
+            return cursor.lastrowid
+    
+    def obtener_credencial(self, credencial_id: int) -> Optional[Dict]:
+        """Obtiene una credencial por ID"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute('SELECT * FROM credenciales_seguros WHERE id = ?', (credencial_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def obtener_credenciales(self, medico_id: str = 'default', limite: int = 50) -> List[Dict]:
+        """Obtiene las credenciales más recientes"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute('''
+                SELECT * FROM credenciales_seguros 
+                WHERE medico_id = ?
+                ORDER BY fecha_procesamiento DESC 
+                LIMIT ?
+            ''', (medico_id, limite))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def guardar_tabulador(self, tabulador_data: Dict) -> int:
+        """Guarda información de un tabulador PDF cargado"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                INSERT INTO tabuladores (
+                    aseguradora, plan_nombre, tipo_documento,
+                    archivo_path, archivo_hash, fecha_vigencia,
+                    contenido_texto, contenido_embedding
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                tabulador_data.get('aseguradora', ''),
+                tabulador_data.get('plan_nombre', ''),
+                tabulador_data.get('tipo_documento', 'tabulador'),
+                tabulador_data.get('archivo_path', ''),
+                tabulador_data.get('archivo_hash', ''),
+                tabulador_data.get('fecha_vigencia'),
+                tabulador_data.get('contenido_texto', ''),
+                tabulador_data.get('contenido_embedding', '')
+            ))
+            return cursor.lastrowid
+    
+    def obtener_tabuladores(self, aseguradora: str = None, activo: bool = True) -> List[Dict]:
+        """Obtiene tabuladores, filtrados opcionalmente por aseguradora"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            query = 'SELECT * FROM tabuladores WHERE activo = ?'
+            params = [1 if activo else 0]
+            
+            if aseguradora:
+                query += ' AND aseguradora = ?'
+                params.append(aseguradora)
+            
+            query += ' ORDER BY fecha_carga DESC'
+            cursor = conn.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def guardar_informe_medico(self, informe_data: Dict) -> int:
+        """Guarda un informe médico generado"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                INSERT INTO informes_medicos (
+                    consulta_id, credencial_seguro_id, aseguradora,
+                    paciente_nombre, numero_poliza, diagnostico,
+                    procedimiento, codigo_cpt, codigo_cie10, informe_pdf_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                informe_data.get('consulta_id'),
+                informe_data.get('credencial_seguro_id'),
+                informe_data.get('aseguradora', ''),
+                informe_data.get('paciente_nombre', ''),
+                informe_data.get('numero_poliza', ''),
+                informe_data.get('diagnostico', ''),
+                informe_data.get('procedimiento', ''),
+                informe_data.get('codigo_cpt', ''),
+                informe_data.get('codigo_cie10', ''),
+                informe_data.get('informe_pdf_path', '')
+            ))
+            return cursor.lastrowid
+    
+    def guardar_consulta_honorario(self, consulta_data: Dict) -> int:
+        """Guarda una consulta de honorario realizada"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                INSERT INTO consultas_honorarios (
+                    medico_id, aseguradora, plan_nombre,
+                    procedimiento, codigo_cpt, monto_encontrado, fuente_tabulador_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                consulta_data.get('medico_id', 'default'),
+                consulta_data.get('aseguradora', ''),
+                consulta_data.get('plan_nombre', ''),
+                consulta_data.get('procedimiento', ''),
+                consulta_data.get('codigo_cpt', ''),
+                consulta_data.get('monto_encontrado'),
+                consulta_data.get('fuente_tabulador_id')
+            ))
+            return cursor.lastrowid

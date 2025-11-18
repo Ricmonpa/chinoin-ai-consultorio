@@ -2,13 +2,14 @@
 import os
 import sys
 import json
+import sqlite3
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, make_response
 from io import BytesIO
 import requests
 import xlsxwriter
 import openpyxl
-from database import ConsultaDB, TransaccionDB
+from database import ConsultaDB, TransaccionDB, SeguroDB
 from clasificaciones_fiscales import (
     obtener_clasificaciones_por_tipo,
     obtener_porcentaje_deducible,
@@ -21,6 +22,10 @@ from formas_pago_sat import (
     es_efectivo,
     validar_deducibilidad_efectivo
 )
+from seguro_ocr import extraer_datos_credencial_imagen, consultar_info_plan
+from seguro_rag import buscar_honorario_en_tabulador, consultar_cobertura_procedimiento
+from seguro_informe import generar_informe_medico, generar_informe_generico
+from seguro_pdf import procesar_tabulador_pdf
 from dotenv import load_dotenv
 
 # Cargar variables de entorno
@@ -166,6 +171,7 @@ def call_gemini_api(prompt, api_key, force_json=False):
 # Inicializar base de datos
 db = ConsultaDB()
 transaccion_db = TransaccionDB()
+seguro_db = SeguroDB()
 
 NORMAS_CONTABLES_BASE = """
 Base de conocimiento sobre normativas fiscales y legales para médicos en México:
@@ -1583,6 +1589,479 @@ def exportar_transacciones_api():
     output.headers["Content-type"] = "text/csv"
     
     return output
+
+# ============================================
+# MÓDULO DE SEGUROS - ENDPOINTS
+# ============================================
+
+@app.route('/seguros')
+def vista_seguros():
+    """Vista principal del módulo de seguros"""
+    credenciales = seguro_db.obtener_credenciales(limite=10)
+    tabuladores = seguro_db.obtener_tabuladores(activo=True)
+    return render_template('seguros.html', credenciales=credenciales, tabuladores=tabuladores)
+
+@app.route('/api/seguros/procesar_credencial', methods=['POST'])
+def procesar_credencial_api():
+    """API para procesar una credencial de seguro desde imagen (OCR)"""
+    if 'imagen' not in request.files:
+        return jsonify({"error": "No se recibió imagen de credencial."}), 400
+    
+    imagen_file = request.files['imagen']
+    
+    if imagen_file.filename == '':
+        return jsonify({"error": "Archivo de imagen vacío."}), 400
+    
+    try:
+        # Leer imagen
+        imagen_bytes = imagen_file.read()
+        
+        # Extraer datos usando OCR con Gemini Vision
+        datos_extractos = extraer_datos_credencial_imagen(imagen_bytes, GEMINI_API_KEY)
+        
+        if not datos_extractos or not datos_extractos.get('aseguradora'):
+            return jsonify({
+                "error": "No se pudo extraer información de la credencial. Por favor, asegúrate de que la imagen sea clara.",
+                "datos_parciales": datos_extractos
+            }), 400
+        
+        # Obtener información del plan (deducible, coaseguro, hospitales)
+        aseguradora = datos_extractos.get('aseguradora', '')
+        plan_nombre = datos_extractos.get('plan_nombre', '')
+        
+        info_plan = consultar_info_plan(aseguradora, plan_nombre)
+        
+        # Preparar datos para guardar
+        credencial_data = {
+            'medico_id': 'default',
+            'paciente_nombre': datos_extractos.get('paciente_nombre', ''),
+            'aseguradora': aseguradora,
+            'numero_poliza': datos_extractos.get('numero_poliza', ''),
+            'plan_nombre': plan_nombre,
+            'nivel_hospitalario': datos_extractos.get('nivel_hospitalario', ''),
+            'deducible_estimado': info_plan.get('deducible_estimado'),
+            'coaseguro_porcentaje': info_plan.get('coaseguro_porcentaje'),
+            'hospitales_red': info_plan.get('hospitales_red', ''),
+            'datos_extractos': json.dumps(datos_extractos, ensure_ascii=False)
+        }
+        
+        # Guardar credencial
+        credencial_id = seguro_db.guardar_credencial(credencial_data)
+        
+        return jsonify({
+            "success": True,
+            "credencial_id": credencial_id,
+            "datos": {
+                "aseguradora": aseguradora,
+                "numero_poliza": datos_extractos.get('numero_poliza', ''),
+                "plan_nombre": plan_nombre,
+                "deducible_estimado": info_plan.get('deducible_estimado'),
+                "coaseguro_porcentaje": info_plan.get('coaseguro_porcentaje'),
+                "hospitales_red": info_plan.get('hospitales_red', ''),
+                "nivel_hospitalario": datos_extractos.get('nivel_hospitalario', ''),
+                "paciente_nombre": datos_extractos.get('paciente_nombre', '')
+            }
+        })
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Exception procesando credencial: {error_details}")
+        return jsonify({
+            "error": "Error al procesar credencial: " + str(e),
+            "debug": {"traceback": error_details[:500]}
+        }), 500
+
+@app.route('/api/seguros/buscar_honorario', methods=['POST'])
+def buscar_honorario_api():
+    """API para buscar honorario de un procedimiento en tabulador usando RAG"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
+    
+    aseguradora = request.json.get('aseguradora', '')
+    plan_nombre = request.json.get('plan_nombre', '')
+    procedimiento = request.json.get('procedimiento', '')
+    codigo_cpt = request.json.get('codigo_cpt', '')
+    
+    if not aseguradora or not procedimiento:
+        return jsonify({"error": "Aseguradora y procedimiento son requeridos."}), 400
+    
+    try:
+        # Buscar tabulador activo de la aseguradora
+        tabuladores = seguro_db.obtener_tabuladores(aseguradora=aseguradora, activo=True)
+        
+        contenido_tabulador = None
+        tabulador_id = None
+        
+        if tabuladores:
+            # Usar el tabulador más reciente
+            tabulador = tabuladores[0]
+            contenido_tabulador = tabulador.get('contenido_texto', '')
+            tabulador_id = tabulador.get('id')
+        
+        # Buscar honorario usando RAG
+        resultado = buscar_honorario_en_tabulador(
+            aseguradora=aseguradora,
+            plan_nombre=plan_nombre,
+            procedimiento=procedimiento,
+            codigo_cpt=codigo_cpt,
+            tabulador_id=tabulador_id,
+            contenido_tabulador=contenido_tabulador,
+            api_key=GEMINI_API_KEY
+        )
+        
+        if resultado.get('error'):
+            return jsonify(resultado), 500
+        
+        # Guardar consulta
+        if resultado.get('monto'):
+            consulta_data = {
+                'medico_id': 'default',
+                'aseguradora': aseguradora,
+                'plan_nombre': plan_nombre,
+                'procedimiento': procedimiento,
+                'codigo_cpt': resultado.get('codigo_cpt') or codigo_cpt,
+                'monto_encontrado': resultado.get('monto'),
+                'fuente_tabulador_id': tabulador_id
+            }
+            seguro_db.guardar_consulta_honorario(consulta_data)
+        
+        return jsonify({
+            "success": True,
+            "resultado": resultado
+        })
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Exception buscando honorario: {error_details}")
+        return jsonify({
+            "error": "Error al buscar honorario: " + str(e),
+            "debug": {"traceback": error_details[:500]}
+        }), 500
+
+@app.route('/api/seguros/consultar_cobertura', methods=['POST'])
+def consultar_cobertura_api():
+    """API para consultar si un procedimiento está cubierto por el seguro"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
+    
+    aseguradora = request.json.get('aseguradora', '')
+    plan_nombre = request.json.get('plan_nombre', '')
+    procedimiento = request.json.get('procedimiento', '')
+    
+    if not aseguradora or not procedimiento:
+        return jsonify({"error": "Aseguradora y procedimiento son requeridos."}), 400
+    
+    try:
+        # Buscar condiciones generales
+        tabuladores = seguro_db.obtener_tabuladores(aseguradora=aseguradora, activo=True)
+        
+        contenido_condiciones = None
+        
+        # Buscar documento de condiciones generales
+        for tab in tabuladores:
+            if tab.get('tipo_documento') == 'condiciones_generales':
+                contenido_condiciones = tab.get('contenido_texto', '')
+                break
+        
+        # Consultar cobertura
+        resultado = consultar_cobertura_procedimiento(
+            aseguradora=aseguradora,
+            plan_nombre=plan_nombre,
+            procedimiento=procedimiento,
+            contenido_condiciones=contenido_condiciones,
+            api_key=GEMINI_API_KEY
+        )
+        
+        if resultado.get('error'):
+            return jsonify(resultado), 500
+        
+        return jsonify({
+            "success": True,
+            "resultado": resultado
+        })
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Exception consultando cobertura: {error_details}")
+        return jsonify({
+            "error": "Error al consultar cobertura: " + str(e),
+            "debug": {"traceback": error_details[:500]}
+        }), 500
+
+@app.route('/api/seguros/generar_informe', methods=['POST'])
+def generar_informe_api():
+    """API para generar informe médico en PDF automáticamente"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
+    
+    consulta_id = request.json.get('consulta_id')
+    credencial_seguro_id = request.json.get('credencial_seguro_id')
+    
+    if not consulta_id:
+        return jsonify({"error": "ID de consulta es requerido."}), 400
+    
+    try:
+        # Obtener datos de la consulta
+        consulta = db.obtener_consulta(consulta_id)
+        if not consulta:
+            return jsonify({"error": "Consulta no encontrada."}), 404
+        
+        # Obtener datos de la credencial de seguro
+        datos_seguro = {}
+        if credencial_seguro_id:
+            credencial = seguro_db.obtener_credencial(credencial_seguro_id)
+            if credencial:
+                datos_seguro = {
+                    'aseguradora': credencial.get('aseguradora', ''),
+                    'numero_poliza': credencial.get('numero_poliza', ''),
+                    'plan_nombre': credencial.get('plan_nombre', '')
+                }
+        
+        # Si no hay credencial, usar datos del request
+        if not datos_seguro.get('aseguradora'):
+            datos_seguro = {
+                'aseguradora': request.json.get('aseguradora', 'GENÉRICO'),
+                'numero_poliza': request.json.get('numero_poliza', ''),
+                'plan_nombre': request.json.get('plan_nombre', '')
+            }
+        
+        # Preparar datos del paciente
+        datos_paciente = {
+            'nombre': consulta.get('paciente_nombre', '') or request.json.get('paciente_nombre', 'Paciente'),
+            'edad': request.json.get('edad', ''),
+            'fecha_nacimiento': request.json.get('fecha_nacimiento', ''),
+            'sexo': request.json.get('sexo', '')
+        }
+        
+        # Preparar datos de la consulta
+        datos_consulta = {
+            'fecha_consulta': consulta.get('fecha_consulta', ''),
+            'diagnostico': consulta.get('diagnostico', ''),
+            'codigo_cie10': request.json.get('codigo_cie10', ''),
+            'procedimiento': request.json.get('procedimiento', ''),
+            'codigo_cpt': request.json.get('codigo_cpt', ''),
+            'tratamiento': consulta.get('tratamiento', ''),
+            'soap_subjetivo': consulta.get('soap_subjetivo', ''),
+            'soap_objetivo': consulta.get('soap_objetivo', ''),
+            'soap_analisis': consulta.get('soap_analisis', ''),
+            'soap_plan': consulta.get('soap_plan', ''),
+            'resumen_clinico': request.json.get('resumen_clinico', '')
+        }
+        
+        # Generar PDF
+        tipo_aseguradora = datos_seguro.get('aseguradora', 'GENÉRICO')
+        pdf_buffer = generar_informe_medico(
+            datos_consulta=datos_consulta,
+            datos_paciente=datos_paciente,
+            datos_seguro=datos_seguro,
+            tipo_aseguradora=tipo_aseguradora
+        )
+        
+        # Guardar informe en BD
+        informe_data = {
+            'consulta_id': consulta_id,
+            'credencial_seguro_id': credencial_seguro_id,
+            'aseguradora': datos_seguro.get('aseguradora', ''),
+            'paciente_nombre': datos_paciente.get('nombre', ''),
+            'numero_poliza': datos_seguro.get('numero_poliza', ''),
+            'diagnostico': datos_consulta.get('diagnostico', ''),
+            'procedimiento': datos_consulta.get('procedimiento', ''),
+            'codigo_cpt': datos_consulta.get('codigo_cpt', ''),
+            'codigo_cie10': datos_consulta.get('codigo_cie10', ''),
+            'informe_pdf_path': ''  # En producción, guardar en disco
+        }
+        informe_id = seguro_db.guardar_informe_medico(informe_data)
+        
+        # Retornar PDF como descarga
+        response = make_response(pdf_buffer.getvalue())
+        paciente_nombre_clean = datos_paciente.get('nombre', 'Paciente').replace(' ', '_')
+        fecha = datetime.now().strftime('%Y%m%d')
+        filename = f"Informe_Medico_{paciente_nombre_clean}_{fecha}.pdf"
+        
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        response.headers["Content-type"] = "application/pdf"
+        
+        return response
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Exception generando informe: {error_details}")
+        return jsonify({
+            "error": "Error al generar informe: " + str(e),
+            "debug": {"traceback": error_details[:500]}
+        }), 500
+
+@app.route('/api/seguros/credenciales', methods=['GET'])
+def obtener_credenciales_api():
+    """API para obtener lista de credenciales procesadas"""
+    medico_id = request.args.get('medico_id', 'default')
+    limite = int(request.args.get('limite', 50))
+    
+    credenciales = seguro_db.obtener_credenciales(medico_id=medico_id, limite=limite)
+    return jsonify(credenciales)
+
+@app.route('/api/seguros/credencial/<int:credencial_id>', methods=['GET'])
+def obtener_credencial_api(credencial_id):
+    """API para obtener una credencial específica"""
+    credencial = seguro_db.obtener_credencial(credencial_id)
+    if not credencial:
+        return jsonify({"error": "Credencial no encontrada"}), 404
+    return jsonify(credencial)
+
+@app.route('/api/seguros/cargar_tabulador', methods=['POST'])
+def cargar_tabulador_api():
+    """API para cargar y procesar un PDF de tabulador"""
+    if 'pdf' not in request.files:
+        return jsonify({"error": "No se recibió archivo PDF."}), 400
+    
+    pdf_file = request.files['pdf']
+    
+    if pdf_file.filename == '':
+        return jsonify({"error": "Archivo PDF vacío."}), 400
+    
+    if not pdf_file.filename.lower().endswith('.pdf'):
+        return jsonify({"error": "El archivo debe ser un PDF."}), 400
+    
+    # Obtener datos opcionales del formulario
+    aseguradora_manual = request.form.get('aseguradora', '').strip()
+    plan_manual = request.form.get('plan_nombre', '').strip()
+    tipo_documento_manual = request.form.get('tipo_documento', '').strip()
+    fecha_vigencia_manual = request.form.get('fecha_vigencia', '').strip()
+    
+    try:
+        # Leer PDF
+        pdf_bytes = pdf_file.read()
+        
+        # Validar tamaño (máx 50MB)
+        if len(pdf_bytes) > 50 * 1024 * 1024:
+            return jsonify({"error": "El archivo PDF es demasiado grande (máx. 50MB)."}), 400
+        
+        # Procesar PDF
+        resultado = procesar_tabulador_pdf(pdf_bytes, pdf_file.filename)
+        
+        if resultado.get('error'):
+            return jsonify({"error": resultado['error']}), 400
+        
+        # Verificar si ya existe (por hash)
+        tabuladores_existentes = seguro_db.obtener_tabuladores()
+        hash_pdf = resultado.get('hash')
+        
+        for tab_existente in tabuladores_existentes:
+            if tab_existente.get('archivo_hash') == hash_pdf:
+                return jsonify({
+                    "error": "Este tabulador ya fue cargado anteriormente.",
+                    "tabulador_existente": {
+                        "id": tab_existente.get('id'),
+                        "aseguradora": tab_existente.get('aseguradora'),
+                        "fecha_carga": tab_existente.get('fecha_carga')
+                    }
+                }), 409
+        
+        # Usar datos detectados o manuales
+        aseguradora = aseguradora_manual or resultado.get('aseguradora') or 'Desconocida'
+        plan = plan_manual or resultado.get('plan') or ''
+        tipo_documento = tipo_documento_manual or resultado.get('tipo_documento') or 'tabulador'
+        fecha_vigencia = fecha_vigencia_manual or resultado.get('fecha_vigencia') or None
+        
+        if not aseguradora or aseguradora == 'Desconocida':
+            return jsonify({
+                "error": "No se pudo detectar la aseguradora automáticamente. Por favor, especifícala manualmente.",
+                "datos_detectados": {
+                    "aseguradora": resultado.get('aseguradora'),
+                    "plan": resultado.get('plan'),
+                    "tipo_documento": resultado.get('tipo_documento'),
+                    "num_paginas": resultado.get('num_paginas')
+                }
+            }), 400
+        
+        # Guardar en base de datos
+        # En producción, guardar el PDF en disco y solo la ruta en BD
+        tabulador_data = {
+            'aseguradora': aseguradora,
+            'plan_nombre': plan,
+            'tipo_documento': tipo_documento,
+            'archivo_path': pdf_file.filename,  # En producción: ruta en disco
+            'archivo_hash': hash_pdf,
+            'fecha_vigencia': fecha_vigencia,
+            'contenido_texto': resultado.get('texto', ''),
+            'contenido_embedding': ''  # Para futuros embeddings
+        }
+        
+        tabulador_id = seguro_db.guardar_tabulador(tabulador_data)
+        
+        return jsonify({
+            "success": True,
+            "tabulador_id": tabulador_id,
+            "mensaje": f"Tabulador cargado exitosamente ({resultado.get('num_paginas', 0)} páginas)",
+            "datos": {
+                "aseguradora": aseguradora,
+                "plan_nombre": plan,
+                "tipo_documento": tipo_documento,
+                "fecha_vigencia": fecha_vigencia,
+                "num_paginas": resultado.get('num_paginas', 0),
+                "texto_preview": resultado.get('texto', '')[:500] + '...' if len(resultado.get('texto', '')) > 500 else resultado.get('texto', '')
+            }
+        })
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Exception cargando tabulador: {error_details}")
+        return jsonify({
+            "error": "Error al procesar PDF: " + str(e),
+            "debug": {"traceback": error_details[:500]}
+        }), 500
+
+@app.route('/api/seguros/tabuladores', methods=['GET'])
+def obtener_tabuladores_api():
+    """API para obtener lista de tabuladores cargados"""
+    aseguradora = request.args.get('aseguradora')
+    activo = request.args.get('activo', 'true').lower() == 'true'
+    
+    tabuladores = seguro_db.obtener_tabuladores(aseguradora=aseguradora, activo=activo)
+    
+    # Limitar tamaño del texto en respuesta (para no saturar)
+    for tab in tabuladores:
+        if tab.get('contenido_texto'):
+            texto = tab['contenido_texto']
+            if len(texto) > 1000:
+                tab['contenido_texto_preview'] = texto[:1000] + '...'
+            else:
+                tab['contenido_texto_preview'] = texto
+            # No enviar el texto completo en la lista
+            del tab['contenido_texto']
+    
+    return jsonify(tabuladores)
+
+@app.route('/api/seguros/tabulador/<int:tabulador_id>', methods=['GET'])
+def obtener_tabulador_api(tabulador_id):
+    """API para obtener un tabulador específico (con texto completo)"""
+    tabuladores = seguro_db.obtener_tabuladores()
+    tabulador = next((t for t in tabuladores if t.get('id') == tabulador_id), None)
+    
+    if not tabulador:
+        return jsonify({"error": "Tabulador no encontrado"}), 404
+    
+    return jsonify(tabulador)
+
+@app.route('/api/seguros/tabulador/<int:tabulador_id>', methods=['DELETE'])
+def eliminar_tabulador_api(tabulador_id):
+    """API para desactivar un tabulador (soft delete)"""
+    with sqlite3.connect(seguro_db.db_path) as conn:
+        cursor = conn.execute('''
+            UPDATE tabuladores 
+            SET activo = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', (tabulador_id,))
+        
+        if cursor.rowcount > 0:
+            return jsonify({"success": True, "message": "Tabulador desactivado correctamente"})
+        else:
+            return jsonify({"error": "Tabulador no encontrado"}), 404
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5555))
