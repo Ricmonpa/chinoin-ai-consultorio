@@ -9,7 +9,7 @@ from io import BytesIO
 import requests
 import xlsxwriter
 import openpyxl
-from database import ConsultaDB, TransaccionDB, SeguroDB
+from database import ConsultaDB, TransaccionDB, SeguroDB, LegalDB
 from clasificaciones_fiscales import (
     obtener_clasificaciones_por_tipo,
     obtener_porcentaje_deducible,
@@ -172,6 +172,7 @@ def call_gemini_api(prompt, api_key, force_json=False):
 db = ConsultaDB()
 transaccion_db = TransaccionDB()
 seguro_db = SeguroDB()
+legal_db = LegalDB()
 
 NORMAS_CONTABLES_BASE = """
 Base de conocimiento sobre normativas fiscales y legales para médicos en México:
@@ -2062,6 +2063,427 @@ def eliminar_tabulador_api(tabulador_id):
             return jsonify({"success": True, "message": "Tabulador desactivado correctamente"})
         else:
             return jsonify({"error": "Tabulador no encontrado"}), 404
+
+# ============================================
+# MÓDULO ASISTENTE LEGAL - ENDPOINTS
+# ============================================
+
+@app.route('/legal')
+def vista_legal():
+    """Vista principal del módulo legal para médicos"""
+    alertas = legal_db.obtener_alertas_legales(limite=10)
+    contratos_vencer = legal_db.obtener_contratos_por_vencer(dias=30)
+    return render_template('legal.html', alertas=alertas, contratos_vencer=contratos_vencer)
+
+@app.route('/legal/abogado')
+def vista_legal_abogado():
+    """Vista del dashboard del abogado"""
+    stats = legal_db.obtener_estadisticas_cumplimiento()
+    alertas = legal_db.obtener_alertas_legales(limite=20)
+    plantillas = legal_db.obtener_plantillas()
+    return render_template('legal_abogado.html', stats=stats, alertas=alertas, plantillas=plantillas)
+
+@app.route('/api/legal/generar_consentimiento', methods=['POST'])
+def generar_consentimiento_api():
+    """API para generar un consentimiento informado personalizado"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
+    
+    procedimiento = request.json.get('procedimiento', '')
+    paciente_nombre = request.json.get('paciente_nombre', '')
+    consulta_id = request.json.get('consulta_id')
+    medico_nombre = request.json.get('medico_nombre', 'Dr. Médico')
+    
+    if not procedimiento:
+        return jsonify({"error": "Procedimiento es requerido."}), 400
+    
+    try:
+        # Buscar plantilla para el procedimiento
+        plantilla = legal_db.obtener_plantilla_por_procedimiento(procedimiento)
+        
+        if not plantilla:
+            # Si no hay plantilla específica, buscar una genérica
+            plantillas = legal_db.obtener_plantillas(tipo_documento='consentimiento_informado')
+            if plantillas:
+                plantilla = plantillas[0]
+            else:
+                return jsonify({
+                    "error": f"No se encontró plantilla para el procedimiento '{procedimiento}'. El abogado debe crear una plantilla primero."
+                }), 404
+        
+        # Personalizar plantilla con datos del paciente usando IA
+        template = plantilla.get('contenido_template', '')
+        
+        # Usar Gemini para personalizar el documento
+        prompt = f"""Eres un asistente legal especializado en documentos médicos en México.
+
+Personaliza el siguiente consentimiento informado con los datos del paciente y procedimiento.
+
+PLANTILLA BASE:
+{template}
+
+DATOS A INSERTAR:
+- Nombre del paciente: {paciente_nombre}
+- Nombre del médico: {medico_nombre}
+- Procedimiento: {procedimiento}
+- Fecha actual: {datetime.now().strftime('%d de %B de %Y')}
+
+INSTRUCCIONES:
+1. Reemplaza todos los placeholders como [NOMBRE_PACIENTE], [PROCEDIMIENTO], [FECHA], etc.
+2. Mantén el formato legal y profesional
+3. Incluye los riesgos específicos del procedimiento si están en la plantilla
+4. Asegúrate de que el documento esté completo y listo para firma
+
+Responde SOLO con el documento personalizado, sin explicaciones adicionales."""
+        
+        documento_personalizado = call_gemini_api(prompt, GEMINI_API_KEY)
+        
+        if not documento_personalizado:
+            # Fallback: reemplazo simple
+            documento_personalizado = template.replace('[NOMBRE_PACIENTE]', paciente_nombre)
+            documento_personalizado = documento_personalizado.replace('[PROCEDIMIENTO]', procedimiento)
+            documento_personalizado = documento_personalizado.replace('[MEDICO]', medico_nombre)
+            documento_personalizado = documento_personalizado.replace('[FECHA]', datetime.now().strftime('%d de %B de %Y'))
+        
+        return jsonify({
+            "success": True,
+            "documento": documento_personalizado,
+            "plantilla_id": plantilla.get('id'),
+            "procedimiento": procedimiento
+        })
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Exception generando consentimiento: {error_details}")
+        return jsonify({
+            "error": "Error al generar consentimiento: " + str(e),
+            "debug": {"traceback": error_details[:500]}
+        }), 500
+
+@app.route('/api/legal/firmar_documento', methods=['POST'])
+def firmar_documento_api():
+    """API para guardar un documento firmado"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
+    
+    try:
+        # Obtener datos de la firma
+        firma_imagen = request.json.get('firma_imagen')  # Base64
+        documento_data = {
+            'medico_id': request.json.get('medico_id', 'default'),
+            'paciente_id': request.json.get('paciente_id'),
+            'paciente_nombre': request.json.get('paciente_nombre', ''),
+            'consulta_id': request.json.get('consulta_id'),
+            'plantilla_id': request.json.get('plantilla_id'),
+            'tipo_documento': request.json.get('tipo_documento', 'consentimiento_informado'),
+            'procedimiento': request.json.get('procedimiento', ''),
+            'contenido_documento': request.json.get('contenido_documento', ''),
+            'firma_digital': request.json.get('firma_digital', ''),
+            'firma_imagen_path': '',  # En producción, guardar imagen en disco
+            'fecha_firma': datetime.now().strftime('%Y-%m-%d'),
+            'hora_firma': datetime.now().strftime('%H:%M:%S'),
+            'latitud': request.json.get('latitud'),
+            'longitud': request.json.get('longitud'),
+            'ip_address': request.remote_addr,
+            'dispositivo': request.headers.get('User-Agent', ''),
+            'hash_documento': str(hash(request.json.get('contenido_documento', '')))
+        }
+        
+        # Guardar documento firmado
+        documento_id = legal_db.guardar_documento_firmado(documento_data)
+        
+        # Registrar en auditoría
+        legal_db.registrar_acceso_auditoria({
+            'medico_id': documento_data['medico_id'],
+            'usuario': 'paciente',
+            'tipo_acceso': 'firma',
+            'entidad': 'documento_firmado',
+            'entidad_id': documento_id,
+            'ip_address': documento_data['ip_address'],
+            'user_agent': documento_data['dispositivo'],
+            'detalles': f"Firma de {documento_data['tipo_documento']} para procedimiento {documento_data['procedimiento']}"
+        })
+        
+        return jsonify({
+            "success": True,
+            "documento_id": documento_id,
+            "message": "Documento firmado y guardado correctamente"
+        })
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Exception firmando documento: {error_details}")
+        return jsonify({
+            "error": "Error al firmar documento: " + str(e),
+            "debug": {"traceback": error_details[:500]}
+        }), 500
+
+@app.route('/api/legal/auditoria_cumplimiento', methods=['POST'])
+def auditoria_cumplimiento_api():
+    """API para ejecutar auditoría de cumplimiento (cruza consultas vs documentos)"""
+    medico_id = request.json.get('medico_id', 'default') if request.json else 'default'
+    
+    try:
+        # Obtener consultas recientes (últimos 30 días)
+        consultas = db.obtener_consultas(medico_id=medico_id, limite=1000)
+        
+        # Obtener documentos firmados
+        documentos = legal_db.obtener_documentos_firmados(medico_id=medico_id, limite=1000)
+        
+        # Crear mapa de consultas con consentimiento
+        consultas_con_consentimiento = set()
+        for doc in documentos:
+            if doc.get('consulta_id') and doc.get('tipo_documento') == 'consentimiento_informado':
+                consultas_con_consentimiento.add(doc['consulta_id'])
+        
+        # Identificar consultas sin consentimiento
+        alertas_creadas = 0
+        procedimientos_requieren_consentimiento = ['cirugía', 'biopsia', 'endoscopia', 'colonoscopia', 'operación', 'intervención']
+        
+        for consulta in consultas:
+            consulta_id = consulta.get('id')
+            diagnostico = consulta.get('diagnostico', '').lower()
+            tratamiento = consulta.get('tratamiento', '').lower()
+            transcripcion = consulta.get('transcripcion', '').lower()
+            
+            # Verificar si requiere consentimiento
+            requiere_consentimiento = any(proc in diagnostico or proc in tratamiento or proc in transcripcion 
+                                         for proc in procedimientos_requieren_consentimiento)
+            
+            if requiere_consentimiento and consulta_id not in consultas_con_consentimiento:
+                # Verificar si ya existe una alerta para esta consulta
+                alertas_existentes = legal_db.obtener_alertas_legales(medico_id=medico_id, limite=1000)
+                ya_existe = any(a.get('entidad_id') == consulta_id and a.get('estado') == 'activa' 
+                               for a in alertas_existentes)
+                
+                if not ya_existe:
+                    legal_db.crear_alerta_legal({
+                        'medico_id': medico_id,
+                        'tipo_alerta': 'consentimiento_faltante',
+                        'severidad': 'alta',
+                        'titulo': f'Consentimiento faltante para consulta #{consulta_id}',
+                        'descripcion': f'La consulta del {consulta.get("fecha_consulta", "")} requiere consentimiento informado pero no se encontró documento firmado.',
+                        'entidad_tipo': 'consulta',
+                        'entidad_id': consulta_id
+                    })
+                    alertas_creadas += 1
+        
+        return jsonify({
+            "success": True,
+            "alertas_creadas": alertas_creadas,
+            "total_consultas_revisadas": len(consultas),
+            "consultas_con_consentimiento": len(consultas_con_consentimiento),
+            "message": f"Auditoría completada. Se crearon {alertas_creadas} alertas."
+        })
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Exception en auditoría: {error_details}")
+        return jsonify({
+            "error": "Error en auditoría: " + str(e),
+            "debug": {"traceback": error_details[:500]}
+        }), 500
+
+@app.route('/api/legal/contratos', methods=['GET'])
+def obtener_contratos_api():
+    """API para obtener contratos de staff"""
+    medico_id = request.args.get('medico_id', 'default')
+    estado = request.args.get('estado')
+    
+    contratos = legal_db.obtener_contratos_staff(medico_id=medico_id, estado=estado)
+    return jsonify(contratos)
+
+@app.route('/api/legal/contratos', methods=['POST'])
+def crear_contrato_api():
+    """API para crear un contrato de staff"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
+    
+    try:
+        contrato_data = {
+            'medico_id': request.json.get('medico_id', 'default'),
+            'empleado_nombre': request.json.get('empleado_nombre'),
+            'puesto': request.json.get('puesto', ''),
+            'tipo_contrato': request.json.get('tipo_contrato'),
+            'fecha_inicio': request.json.get('fecha_inicio'),
+            'fecha_fin': request.json.get('fecha_fin'),
+            'salario': request.json.get('salario'),
+            'plantilla_contrato_id': request.json.get('plantilla_contrato_id'),
+            'documento_firmado_id': request.json.get('documento_firmado_id'),
+            'notas': request.json.get('notas', '')
+        }
+        
+        contrato_id = legal_db.guardar_contrato_staff(contrato_data)
+        
+        # Si tiene fecha de vencimiento, verificar si necesita alerta
+        if contrato_data.get('fecha_fin'):
+            fecha_fin = datetime.strptime(contrato_data['fecha_fin'], '%Y-%m-%d').date()
+            dias_restantes = (fecha_fin - datetime.now().date()).days
+            
+            if dias_restantes <= 30 and dias_restantes >= 0:
+                legal_db.crear_alerta_legal({
+                    'medico_id': contrato_data['medico_id'],
+                    'tipo_alerta': 'contrato_vencido',
+                    'severidad': 'media' if dias_restantes > 7 else 'alta',
+                    'titulo': f'Contrato de {contrato_data["empleado_nombre"]} vence en {dias_restantes} días',
+                    'descripcion': f'El contrato de {contrato_data["empleado_nombre"]} vence el {contrato_data["fecha_fin"]}. ¿Renovar o terminar?',
+                    'entidad_tipo': 'contrato_staff',
+                    'entidad_id': contrato_id
+                })
+        
+        return jsonify({
+            "success": True,
+            "contrato_id": contrato_id,
+            "message": "Contrato creado correctamente"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": "Error al crear contrato: " + str(e)}), 500
+
+@app.route('/api/legal/incidencias', methods=['POST'])
+def crear_incidencia_api():
+    """API para registrar una incidencia laboral"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
+    
+    try:
+        incidencia_data = {
+            'medico_id': request.json.get('medico_id', 'default'),
+            'contrato_staff_id': request.json.get('contrato_staff_id'),
+            'empleado_nombre': request.json.get('empleado_nombre'),
+            'tipo_incidencia': request.json.get('tipo_incidencia'),
+            'descripcion': request.json.get('descripcion'),
+            'fecha_incidencia': request.json.get('fecha_incidencia', datetime.now().strftime('%Y-%m-%d')),
+            'hora_incidencia': request.json.get('hora_incidencia', datetime.now().strftime('%H:%M:%S')),
+            'evidencia_path': request.json.get('evidencia_path', '')
+        }
+        
+        incidencia_id = legal_db.guardar_incidencia_laboral(incidencia_data)
+        
+        return jsonify({
+            "success": True,
+            "incidencia_id": incidencia_id,
+            "message": "Incidencia registrada correctamente"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": "Error al registrar incidencia: " + str(e)}), 500
+
+@app.route('/api/legal/panico', methods=['POST'])
+def boton_panico_api():
+    """API para el botón de pánico legal (respuesta a crisis)"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
+    
+    tipo_crisis = request.json.get('tipo_crisis', 'emergencia_legal')
+    medico_id = request.json.get('medico_id', 'default')
+    
+    try:
+        # Obtener guía de reacción rápida
+        guia = legal_db.obtener_guia_reaccion(tipo_crisis, medico_id)
+        
+        if not guia:
+            # Crear guía genérica si no existe
+            guia = {
+                'titulo': 'Guía de Reacción Rápida',
+                'contenido': 'Contacta inmediatamente a tu abogado. No proporciones información adicional sin asesoría legal.',
+                'pasos_accion': '1. Mantén la calma\n2. Contacta al abogado\n3. No firmes nada sin revisar',
+                'documentos_necesarios': 'Identificación oficial, documentos del caso',
+                'contacto_abogado': 'Contactar al abogado asignado'
+            }
+        
+        # Crear alerta de emergencia
+        alerta_id = legal_db.crear_alerta_legal({
+            'medico_id': medico_id,
+            'tipo_alerta': 'riesgo_alto',
+            'severidad': 'critica',
+            'titulo': f'🚨 ALERTA URGENTE: {guia.get("titulo", "Crisis Legal")}',
+            'descripcion': f'Se activó el botón de pánico para: {tipo_crisis}. {guia.get("contenido", "")}',
+            'entidad_tipo': 'crisis',
+            'entidad_id': None
+        })
+        
+        return jsonify({
+            "success": True,
+            "alerta_id": alerta_id,
+            "guia": guia,
+            "message": "Alerta enviada. Revisa la guía de reacción rápida."
+        })
+        
+    except Exception as e:
+        return jsonify({"error": "Error al activar botón de pánico: " + str(e)}), 500
+
+@app.route('/api/legal/plantillas', methods=['GET'])
+def obtener_plantillas_api():
+    """API para obtener plantillas legales"""
+    tipo_documento = request.args.get('tipo_documento')
+    activo = request.args.get('activo', 'true').lower() == 'true'
+    
+    plantillas = legal_db.obtener_plantillas(tipo_documento=tipo_documento, activo=activo)
+    return jsonify(plantillas)
+
+@app.route('/api/legal/plantillas', methods=['POST'])
+def crear_plantilla_api():
+    """API para crear/actualizar una plantilla legal"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
+    
+    try:
+        plantilla_data = {
+            'tipo_documento': request.json.get('tipo_documento'),
+            'nombre_plantilla': request.json.get('nombre_plantilla'),
+            'procedimiento': request.json.get('procedimiento', ''),
+            'contenido_template': request.json.get('contenido_template'),
+            'variables_template': request.json.get('variables_template', ''),
+            'aprobado_por': request.json.get('aprobado_por', ''),
+            'fecha_aprobacion': request.json.get('fecha_aprobacion', datetime.now().strftime('%Y-%m-%d'))
+        }
+        
+        plantilla_id = legal_db.guardar_plantilla(plantilla_data)
+        
+        return jsonify({
+            "success": True,
+            "plantilla_id": plantilla_id,
+            "message": "Plantilla guardada correctamente"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": "Error al guardar plantilla: " + str(e)}), 500
+
+@app.route('/api/legal/alertas', methods=['GET'])
+def obtener_alertas_api():
+    """API para obtener alertas legales"""
+    medico_id = request.args.get('medico_id', 'default')
+    estado = request.args.get('estado', 'activa')
+    limite = int(request.args.get('limite', 50))
+    
+    alertas = legal_db.obtener_alertas_legales(medico_id=medico_id, estado=estado, limite=limite)
+    return jsonify(alertas)
+
+@app.route('/api/legal/alertas/<int:alerta_id>/resolver', methods=['POST'])
+def resolver_alerta_api(alerta_id):
+    """API para resolver una alerta legal"""
+    if not request.json:
+        return jsonify({"error": "No se recibió datos JSON."}), 400
+    
+    resuelto_por = request.json.get('resuelto_por', 'abogado')
+    notas = request.json.get('notas', '')
+    
+    try:
+        legal_db.resolver_alerta(alerta_id, resuelto_por, notas)
+        return jsonify({"success": True, "message": "Alerta resuelta correctamente"})
+    except Exception as e:
+        return jsonify({"error": "Error al resolver alerta: " + str(e)}), 500
+
+@app.route('/api/legal/estadisticas_cumplimiento')
+def estadisticas_cumplimiento_api():
+    """API para obtener estadísticas de cumplimiento"""
+    medico_id = request.args.get('medico_id', 'default')
+    stats = legal_db.obtener_estadisticas_cumplimiento(medico_id=medico_id)
+    return jsonify(stats)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5555))

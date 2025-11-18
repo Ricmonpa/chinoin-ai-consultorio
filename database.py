@@ -668,3 +668,503 @@ class SeguroDB:
                 consulta_data.get('fuente_tabulador_id')
             ))
             return cursor.lastrowid
+
+class LegalDB:
+    """Gestión de documentos legales, consentimientos, contratos y auditoría de cumplimiento"""
+    
+    def __init__(self, db_path: str = "consultas.db"):
+        self.db_path = db_path
+        self.init_database()
+    
+    def init_database(self):
+        """Inicializa las tablas del módulo legal"""
+        with sqlite3.connect(self.db_path) as conn:
+            # Tabla de plantillas legales (consentimientos, contratos, etc.)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS plantillas_legales (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tipo_documento TEXT NOT NULL CHECK(tipo_documento IN ('consentimiento_informado', 'contrato_laboral', 'nda', 'aviso_privacidad', 'otro')),
+                    nombre_plantilla TEXT NOT NULL,
+                    procedimiento TEXT,
+                    contenido_template TEXT NOT NULL,
+                    variables_template TEXT,
+                    aprobado_por TEXT,
+                    fecha_aprobacion DATE,
+                    activo BOOLEAN DEFAULT 1,
+                    version INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Tabla de documentos firmados (consentimientos, contratos)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS documentos_firmados (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medico_id TEXT DEFAULT 'default',
+                    paciente_id INTEGER,
+                    paciente_nombre TEXT,
+                    consulta_id INTEGER,
+                    plantilla_id INTEGER,
+                    tipo_documento TEXT NOT NULL,
+                    procedimiento TEXT,
+                    contenido_documento TEXT NOT NULL,
+                    firma_digital TEXT,
+                    firma_imagen_path TEXT,
+                    fecha_firma DATETIME NOT NULL,
+                    hora_firma TIME NOT NULL,
+                    latitud REAL,
+                    longitud REAL,
+                    ip_address TEXT,
+                    dispositivo TEXT,
+                    hash_documento TEXT,
+                    estado TEXT DEFAULT 'firmado' CHECK(estado IN ('firmado', 'cancelado', 'rechazado')),
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Tabla de log de auditoría (quién accedió a qué)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS log_auditoria (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medico_id TEXT,
+                    usuario TEXT,
+                    tipo_acceso TEXT CHECK(tipo_acceso IN ('lectura', 'escritura', 'eliminacion', 'firma', 'descarga')),
+                    entidad TEXT,
+                    entidad_id INTEGER,
+                    ip_address TEXT,
+                    user_agent TEXT,
+                    detalles TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Tabla de contratos de staff (empleados, asistentes, enfermeras)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS contratos_staff (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medico_id TEXT DEFAULT 'default',
+                    empleado_nombre TEXT NOT NULL,
+                    puesto TEXT,
+                    tipo_contrato TEXT CHECK(tipo_contrato IN ('indefinido', 'temporal', 'prueba', 'honorarios')),
+                    fecha_inicio DATE NOT NULL,
+                    fecha_fin DATE,
+                    salario REAL,
+                    plantilla_contrato_id INTEGER,
+                    documento_firmado_id INTEGER,
+                    estado TEXT DEFAULT 'activo' CHECK(estado IN ('activo', 'vencido', 'terminado', 'renovado')),
+                    alerta_vencimiento BOOLEAN DEFAULT 0,
+                    dias_vencimiento INTEGER,
+                    notas TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Tabla de incidencias laborales (registro de faltas, problemas)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS incidencias_laborales (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medico_id TEXT DEFAULT 'default',
+                    contrato_staff_id INTEGER,
+                    empleado_nombre TEXT NOT NULL,
+                    tipo_incidencia TEXT CHECK(tipo_incidencia IN ('falta', 'retardo', 'incumplimiento', 'queja', 'otro')),
+                    descripcion TEXT NOT NULL,
+                    fecha_incidencia DATE NOT NULL,
+                    hora_incidencia TIME,
+                    evidencia_path TEXT,
+                    estado TEXT DEFAULT 'registrado' CHECK(estado IN ('registrado', 'resuelto', 'escalado')),
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Tabla de alertas legales (riesgos detectados por auditoría)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS alertas_legales (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medico_id TEXT DEFAULT 'default',
+                    tipo_alerta TEXT CHECK(tipo_alerta IN ('consentimiento_faltante', 'contrato_vencido', 'incumplimiento_nom', 'riesgo_alto', 'auditoria_cumplimiento')),
+                    severidad TEXT CHECK(severidad IN ('baja', 'media', 'alta', 'critica')),
+                    titulo TEXT NOT NULL,
+                    descripcion TEXT NOT NULL,
+                    entidad_tipo TEXT,
+                    entidad_id INTEGER,
+                    fecha_deteccion DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    fecha_resolucion DATETIME,
+                    estado TEXT DEFAULT 'activa' CHECK(estado IN ('activa', 'resuelta', 'descartada')),
+                    resuelto_por TEXT,
+                    notas_resolucion TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Tabla de guías de reacción rápida (para botón de pánico)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS guias_reaccion_rapida (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medico_id TEXT DEFAULT 'default',
+                    tipo_crisis TEXT CHECK(tipo_crisis IN ('inspeccion_cofepris', 'amenaza_demanda', 'inspeccion_sat', 'emergencia_legal', 'otro')),
+                    titulo TEXT NOT NULL,
+                    contenido TEXT NOT NULL,
+                    pasos_accion TEXT,
+                    documentos_necesarios TEXT,
+                    contacto_abogado TEXT,
+                    activo BOOLEAN DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Índices para búsquedas rápidas
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_doc_firmado_consulta ON documentos_firmados(consulta_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_doc_firmado_paciente ON documentos_firmados(paciente_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_doc_firmado_tipo ON documentos_firmados(tipo_documento)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_log_auditoria_medico ON log_auditoria(medico_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_log_auditoria_fecha ON log_auditoria(created_at)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_contrato_staff_vencimiento ON contratos_staff(fecha_fin)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_contrato_staff_estado ON contratos_staff(estado)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_alertas_estado ON alertas_legales(estado)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_alertas_severidad ON alertas_legales(severidad)')
+            
+            conn.commit()
+    
+    def guardar_plantilla(self, plantilla_data: Dict) -> int:
+        """Guarda una nueva plantilla legal"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                INSERT INTO plantillas_legales (
+                    tipo_documento, nombre_plantilla, procedimiento,
+                    contenido_template, variables_template, aprobado_por, fecha_aprobacion
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                plantilla_data.get('tipo_documento'),
+                plantilla_data.get('nombre_plantilla'),
+                plantilla_data.get('procedimiento', ''),
+                plantilla_data.get('contenido_template'),
+                plantilla_data.get('variables_template', ''),
+                plantilla_data.get('aprobado_por', ''),
+                plantilla_data.get('fecha_aprobacion')
+            ))
+            return cursor.lastrowid
+    
+    def obtener_plantillas(self, tipo_documento: str = None, activo: bool = True) -> List[Dict]:
+        """Obtiene plantillas legales, filtradas opcionalmente"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            query = 'SELECT * FROM plantillas_legales WHERE activo = ?'
+            params = [1 if activo else 0]
+            
+            if tipo_documento:
+                query += ' AND tipo_documento = ?'
+                params.append(tipo_documento)
+            
+            query += ' ORDER BY updated_at DESC'
+            cursor = conn.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def obtener_plantilla_por_procedimiento(self, procedimiento: str) -> Optional[Dict]:
+        """Obtiene la plantilla activa para un procedimiento específico"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute('''
+                SELECT * FROM plantillas_legales 
+                WHERE procedimiento = ? AND activo = 1
+                ORDER BY version DESC
+                LIMIT 1
+            ''', (procedimiento,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def guardar_documento_firmado(self, documento_data: Dict) -> int:
+        """Guarda un documento firmado"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                INSERT INTO documentos_firmados (
+                    medico_id, paciente_id, paciente_nombre, consulta_id, plantilla_id,
+                    tipo_documento, procedimiento, contenido_documento,
+                    firma_digital, firma_imagen_path, fecha_firma, hora_firma,
+                    latitud, longitud, ip_address, dispositivo, hash_documento
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                documento_data.get('medico_id', 'default'),
+                documento_data.get('paciente_id'),
+                documento_data.get('paciente_nombre', ''),
+                documento_data.get('consulta_id'),
+                documento_data.get('plantilla_id'),
+                documento_data.get('tipo_documento'),
+                documento_data.get('procedimiento', ''),
+                documento_data.get('contenido_documento'),
+                documento_data.get('firma_digital', ''),
+                documento_data.get('firma_imagen_path', ''),
+                documento_data.get('fecha_firma'),
+                documento_data.get('hora_firma'),
+                documento_data.get('latitud'),
+                documento_data.get('longitud'),
+                documento_data.get('ip_address', ''),
+                documento_data.get('dispositivo', ''),
+                documento_data.get('hash_documento', '')
+            ))
+            return cursor.lastrowid
+    
+    def obtener_documentos_firmados(self, medico_id: str = 'default', consulta_id: int = None, limite: int = 50) -> List[Dict]:
+        """Obtiene documentos firmados"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            query = 'SELECT * FROM documentos_firmados WHERE medico_id = ?'
+            params = [medico_id]
+            
+            if consulta_id:
+                query += ' AND consulta_id = ?'
+                params.append(consulta_id)
+            
+            query += ' ORDER BY fecha_firma DESC LIMIT ?'
+            params.append(limite)
+            
+            cursor = conn.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def registrar_acceso_auditoria(self, acceso_data: Dict):
+        """Registra un acceso en el log de auditoría"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                INSERT INTO log_auditoria (
+                    medico_id, usuario, tipo_acceso, entidad, entidad_id,
+                    ip_address, user_agent, detalles
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                acceso_data.get('medico_id', 'default'),
+                acceso_data.get('usuario', ''),
+                acceso_data.get('tipo_acceso', 'lectura'),
+                acceso_data.get('entidad', ''),
+                acceso_data.get('entidad_id'),
+                acceso_data.get('ip_address', ''),
+                acceso_data.get('user_agent', ''),
+                acceso_data.get('detalles', '')
+            ))
+    
+    def guardar_contrato_staff(self, contrato_data: Dict) -> int:
+        """Guarda un contrato de staff"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                INSERT INTO contratos_staff (
+                    medico_id, empleado_nombre, puesto, tipo_contrato,
+                    fecha_inicio, fecha_fin, salario, plantilla_contrato_id,
+                    documento_firmado_id, estado, notas
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                contrato_data.get('medico_id', 'default'),
+                contrato_data.get('empleado_nombre'),
+                contrato_data.get('puesto', ''),
+                contrato_data.get('tipo_contrato'),
+                contrato_data.get('fecha_inicio'),
+                contrato_data.get('fecha_fin'),
+                contrato_data.get('salario'),
+                contrato_data.get('plantilla_contrato_id'),
+                contrato_data.get('documento_firmado_id'),
+                contrato_data.get('estado', 'activo'),
+                contrato_data.get('notas', '')
+            ))
+            return cursor.lastrowid
+    
+    def obtener_contratos_staff(self, medico_id: str = 'default', estado: str = None) -> List[Dict]:
+        """Obtiene contratos de staff"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            query = 'SELECT * FROM contratos_staff WHERE medico_id = ?'
+            params = [medico_id]
+            
+            if estado:
+                query += ' AND estado = ?'
+                params.append(estado)
+            
+            query += ' ORDER BY fecha_fin DESC, fecha_inicio DESC'
+            cursor = conn.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def obtener_contratos_por_vencer(self, medico_id: str = 'default', dias: int = 30) -> List[Dict]:
+        """Obtiene contratos que vencen en los próximos N días"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute('''
+                SELECT *, 
+                    julianday(fecha_fin) - julianday('now') as dias_restantes
+                FROM contratos_staff 
+                WHERE medico_id = ? 
+                    AND estado = 'activo'
+                    AND fecha_fin IS NOT NULL
+                    AND julianday(fecha_fin) - julianday('now') <= ?
+                    AND julianday(fecha_fin) - julianday('now') >= 0
+                ORDER BY fecha_fin ASC
+            ''', (medico_id, dias))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def guardar_incidencia_laboral(self, incidencia_data: Dict) -> int:
+        """Guarda una incidencia laboral"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                INSERT INTO incidencias_laborales (
+                    medico_id, contrato_staff_id, empleado_nombre,
+                    tipo_incidencia, descripcion, fecha_incidencia, hora_incidencia, evidencia_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                incidencia_data.get('medico_id', 'default'),
+                incidencia_data.get('contrato_staff_id'),
+                incidencia_data.get('empleado_nombre'),
+                incidencia_data.get('tipo_incidencia'),
+                incidencia_data.get('descripcion'),
+                incidencia_data.get('fecha_incidencia'),
+                incidencia_data.get('hora_incidencia'),
+                incidencia_data.get('evidencia_path', '')
+            ))
+            return cursor.lastrowid
+    
+    def obtener_incidencias_laborales(self, medico_id: str = 'default', contrato_staff_id: int = None, limite: int = 50) -> List[Dict]:
+        """Obtiene incidencias laborales"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            query = 'SELECT * FROM incidencias_laborales WHERE medico_id = ?'
+            params = [medico_id]
+            
+            if contrato_staff_id:
+                query += ' AND contrato_staff_id = ?'
+                params.append(contrato_staff_id)
+            
+            query += ' ORDER BY fecha_incidencia DESC, hora_incidencia DESC LIMIT ?'
+            params.append(limite)
+            
+            cursor = conn.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def crear_alerta_legal(self, alerta_data: Dict) -> int:
+        """Crea una alerta legal"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                INSERT INTO alertas_legales (
+                    medico_id, tipo_alerta, severidad, titulo, descripcion,
+                    entidad_tipo, entidad_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                alerta_data.get('medico_id', 'default'),
+                alerta_data.get('tipo_alerta'),
+                alerta_data.get('severidad', 'media'),
+                alerta_data.get('titulo'),
+                alerta_data.get('descripcion'),
+                alerta_data.get('entidad_tipo', ''),
+                alerta_data.get('entidad_id')
+            ))
+            return cursor.lastrowid
+    
+    def obtener_alertas_legales(self, medico_id: str = 'default', estado: str = 'activa', limite: int = 50) -> List[Dict]:
+        """Obtiene alertas legales"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute('''
+                SELECT * FROM alertas_legales 
+                WHERE medico_id = ? AND estado = ?
+                ORDER BY 
+                    CASE severidad 
+                        WHEN 'critica' THEN 1
+                        WHEN 'alta' THEN 2
+                        WHEN 'media' THEN 3
+                        WHEN 'baja' THEN 4
+                    END,
+                    fecha_deteccion DESC
+                LIMIT ?
+            ''', (medico_id, estado, limite))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def resolver_alerta(self, alerta_id: int, resuelto_por: str, notas: str = ''):
+        """Marca una alerta como resuelta"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                UPDATE alertas_legales 
+                SET estado = 'resuelta',
+                    fecha_resolucion = CURRENT_TIMESTAMP,
+                    resuelto_por = ?,
+                    notas_resolucion = ?
+                WHERE id = ?
+            ''', (resuelto_por, notas, alerta_id))
+    
+    def obtener_estadisticas_cumplimiento(self, medico_id: str = 'default') -> Dict:
+        """Obtiene estadísticas de cumplimiento para el dashboard del abogado"""
+        with sqlite3.connect(self.db_path) as conn:
+            # Total de consultas con consentimiento
+            cursor = conn.execute('''
+                SELECT COUNT(DISTINCT consulta_id) 
+                FROM documentos_firmados 
+                WHERE medico_id = ? AND tipo_documento = 'consentimiento_informado'
+            ''', (medico_id,))
+            consultas_con_consentimiento = cursor.fetchone()[0] or 0
+            
+            # Total de consultas (desde tabla consultas)
+            cursor = conn.execute('''
+                SELECT COUNT(*) FROM consultas WHERE medico_id = ?
+            ''', (medico_id,))
+            total_consultas = cursor.fetchone()[0] or 0
+            
+            # Alertas activas por severidad
+            cursor = conn.execute('''
+                SELECT severidad, COUNT(*) 
+                FROM alertas_legales 
+                WHERE medico_id = ? AND estado = 'activa'
+                GROUP BY severidad
+            ''', (medico_id,))
+            alertas_por_severidad = {row[0]: row[1] for row in cursor.fetchall()}
+            
+            # Contratos por vencer
+            cursor = conn.execute('''
+                SELECT COUNT(*) 
+                FROM contratos_staff 
+                WHERE medico_id = ? 
+                    AND estado = 'activo'
+                    AND fecha_fin IS NOT NULL
+                    AND julianday(fecha_fin) - julianday('now') <= 30
+                    AND julianday(fecha_fin) - julianday('now') >= 0
+            ''', (medico_id,))
+            contratos_por_vencer = cursor.fetchone()[0] or 0
+            
+            # Porcentaje de cumplimiento NOM-004
+            porcentaje_cumplimiento = 0
+            if total_consultas > 0:
+                porcentaje_cumplimiento = round((consultas_con_consentimiento / total_consultas) * 100, 1)
+            
+            return {
+                'total_consultas': total_consultas,
+                'consultas_con_consentimiento': consultas_con_consentimiento,
+                'porcentaje_cumplimiento_nom': porcentaje_cumplimiento,
+                'alertas_activas': sum(alertas_por_severidad.values()),
+                'alertas_por_severidad': alertas_por_severidad,
+                'contratos_por_vencer': contratos_por_vencer
+            }
+    
+    def guardar_guia_reaccion(self, guia_data: Dict) -> int:
+        """Guarda una guía de reacción rápida"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                INSERT INTO guias_reaccion_rapida (
+                    medico_id, tipo_crisis, titulo, contenido, pasos_accion,
+                    documentos_necesarios, contacto_abogado
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                guia_data.get('medico_id', 'default'),
+                guia_data.get('tipo_crisis'),
+                guia_data.get('titulo'),
+                guia_data.get('contenido'),
+                guia_data.get('pasos_accion', ''),
+                guia_data.get('documentos_necesarios', ''),
+                guia_data.get('contacto_abogado', '')
+            ))
+            return cursor.lastrowid
+    
+    def obtener_guia_reaccion(self, tipo_crisis: str, medico_id: str = 'default') -> Optional[Dict]:
+        """Obtiene la guía de reacción rápida para un tipo de crisis"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute('''
+                SELECT * FROM guias_reaccion_rapida 
+                WHERE medico_id = ? AND tipo_crisis = ? AND activo = 1
+                ORDER BY updated_at DESC
+                LIMIT 1
+            ''', (medico_id, tipo_crisis))
+            row = cursor.fetchone()
+            return dict(row) if row else None
