@@ -2,6 +2,8 @@
 
 Kit de herramientas de gestión médica con inteligencia artificial para médicos, ofrecido por **CHINOIN®**.
 
+> **Versión:** 2.0 - Incluye módulo de Asistente Legal
+
 ## 🚀 Características
 
 - **🎤 Transcriptor de Consultas**: Graba consultas y genera notas SOAP automáticamente
