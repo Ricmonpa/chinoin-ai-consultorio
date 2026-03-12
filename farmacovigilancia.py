@@ -137,6 +137,7 @@ def extraer_entidades_gemini(texto: str, api_key: Optional[str]) -> Optional[Dic
     Respuesta forzada en JSON. No debe usarse para validar interacciones (solo extracción).
     """
     if not api_key or not texto or not texto.strip():
+        print("[farmacovigilancia] Sin API key o texto vacío")
         return None
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
     prompt = PROMPT_EXTRACCION.format(texto=texto.strip())
@@ -146,24 +147,45 @@ def extraer_entidades_gemini(texto: str, api_key: Optional[str]) -> Optional[Dic
     }
     try:
         r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+        print(f"[farmacovigilancia] Gemini status: {r.status_code}")
         if r.status_code != 200:
+            print(f"[farmacovigilancia] Gemini error body: {r.text[:500]}")
             return None
         data = r.json()
-        if "candidates" not in data or not data["candidates"]:
+        candidates = data.get("candidates") or []
+        if not candidates:
+            print(f"[farmacovigilancia] Sin candidates en respuesta")
             return None
-        text = data["candidates"][0]["content"]["parts"][0].get("text", "")
-        parsed = json.loads(text)
-        # Asegurar estructura
+
+        # Navegar estructura de Gemini de forma defensiva
+        candidate = candidates[0]
+        content = candidate.get("content") or {}
+        parts = content.get("parts") or []
+        if not parts:
+            print(f"[farmacovigilancia] Sin parts en candidate")
+            return None
+
+        raw_text = parts[0].get("text") or ""
+        print(f"[farmacovigilancia] Gemini raw (300c): {raw_text[:300]}")
+
+        # Limpiar posible markdown wrapping (```json ... ```)
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+
+        parsed = json.loads(cleaned)
+        if not isinstance(parsed, dict):
+            print(f"[farmacovigilancia] parsed no es dict: {type(parsed)}")
+            return None
+
         return {
             "receta_actual": _asegurar_lista(parsed.get("receta_actual"), dict),
             "tratamiento_cronico": _asegurar_lista(parsed.get("tratamiento_cronico"), dict),
             "alergias_conocidas": _asegurar_lista(parsed.get("alergias_conocidas"), str),
         }
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        print(f"[farmacovigilancia] Error parseando respuesta Gemini: {e}")
-        return None
     except Exception as e:
-        print(f"[farmacovigilancia] Error llamando Gemini: {e}")
+        print(f"[farmacovigilancia] Error extracción Gemini: {type(e).__name__}: {e}")
         return None
 
 
@@ -300,18 +322,22 @@ def ejecutar_validacion_completa(texto: str, api_key: Optional[str]) -> Dict[str
     """
     Flujo completo: extracción Gemini + validación dura.
     Si Gemini falla, devuelve nivel VERDE con mensaje de precaución y entidades vacías.
+    Nunca lanza excepciones: siempre devuelve un dict válido.
     """
-    entidades = extraer_entidades_gemini(texto, api_key)
-    if entidades is None:
-        return {
-            "nivel": "VERDE",
-            "mensaje": "No fue posible extraer entidades del texto. Revise el contenido o intente de nuevo.",
-            "detalles": [],
-            "entidades_extraidas": {
-                "receta_actual": [],
-                "tratamiento_cronico": [],
-                "alergias_conocidas": [],
-            },
-            "error_extraccion": True,
-        }
-    return validar_farmacovigilancia(entidades)
+    _empty = {
+        "nivel": "VERDE",
+        "detalles": [],
+        "entidades_extraidas": {"receta_actual": [], "tratamiento_cronico": [], "alergias_conocidas": []},
+    }
+    try:
+        entidades = extraer_entidades_gemini(texto, api_key)
+        if entidades is None:
+            _empty["mensaje"] = "No fue posible extraer entidades del texto. Revise el contenido o intente de nuevo."
+            _empty["error_extraccion"] = True
+            return _empty
+        return validar_farmacovigilancia(entidades)
+    except Exception as e:
+        print(f"[farmacovigilancia] Error en validación completa: {type(e).__name__}: {e}")
+        _empty["mensaje"] = f"Error interno en validación: {type(e).__name__}"
+        _empty["error_interno"] = True
+        return _empty

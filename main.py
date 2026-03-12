@@ -738,20 +738,8 @@ def api_validar_farmacovigilancia():
     texto = request.json.get("texto") or request.json.get("transcripcion") or ""
     if not texto or not str(texto).strip():
         return jsonify({"error": "Se requiere 'texto' o 'transcripcion' con contenido"}), 400
-    try:
-        resultado = ejecutar_validacion_completa(str(texto).strip(), GEMINI_API_KEY)
-        return jsonify(resultado)
-    except Exception as e:
-        print(f"[validar_farmacovigilancia] Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            "nivel": "VERDE",
-            "mensaje": "Error interno al validar. Revise logs.",
-            "detalles": [],
-            "entidades_extraidas": {"receta_actual": [], "tratamiento_cronico": [], "alergias_conocidas": []},
-            "error": str(e),
-        }), 500
+    resultado = ejecutar_validacion_completa(str(texto).strip(), GEMINI_API_KEY)
+    return jsonify(resultado)
 
 
 @app.route('/contador')
