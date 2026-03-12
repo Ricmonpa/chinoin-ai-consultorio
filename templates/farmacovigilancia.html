@@ -211,6 +211,13 @@
                         entidades.style.display = 'none';
                     }
 
+                    if (data._debug && data._debug !== 'ok') {
+                        var dbg = document.createElement('div');
+                        dbg.style.cssText = 'margin-top:12px;padding:10px;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;font-size:0.85em;color:#856404;word-break:break-all;';
+                        dbg.innerHTML = '<strong>Debug:</strong> ' + data._debug;
+                        detalles.parentNode.appendChild(dbg);
+                    }
+
                     result.classList.add('visible');
                 })
                 .catch(function(err) {

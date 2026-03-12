@@ -6,8 +6,14 @@ CERO alucinaciones clínicas: la IA no inventa interacciones; solo extrae datos 
 """
 import json
 import re
+import sys
 import requests
 from typing import Dict, List, Any, Optional, Tuple
+
+
+def _log(msg: str):
+    """Print que siempre se muestra en Railway (stderr + flush)."""
+    print(f"[farmacovigilancia] {msg}", file=sys.stderr, flush=True)
 
 # --- 1. MOCK DATA: Fuente de verdad para cruce (simula RxNav/DrugBank) ---
 
@@ -138,10 +144,13 @@ def extraer_entidades_gemini(texto: str, api_key: Optional[str]) -> Dict[str, An
     Si ok=True, incluye receta_actual, tratamiento_cronico, alergias_conocidas.
     """
     if not api_key:
+        _log("NO API KEY")
         return {"ok": False, "_debug": "GEMINI_API_KEY no configurada en el servidor"}
     if not texto or not texto.strip():
+        _log("Texto vacío")
         return {"ok": False, "_debug": "Texto vacío"}
 
+    _log(f"Llamando Gemini con {len(texto)} chars de texto")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
     prompt = PROMPT_EXTRACCION.format(texto=texto.strip())
     payload = {
@@ -150,21 +159,27 @@ def extraer_entidades_gemini(texto: str, api_key: Optional[str]) -> Dict[str, An
     }
     try:
         r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+        _log(f"Gemini status={r.status_code}")
         if r.status_code != 200:
-            return {"ok": False, "_debug": f"Gemini HTTP {r.status_code}: {r.text[:300]}"}
+            body = r.text[:300]
+            _log(f"Gemini error: {body}")
+            return {"ok": False, "_debug": f"Gemini HTTP {r.status_code}: {body}"}
         data = r.json()
         candidates = data.get("candidates") or []
         if not candidates:
             finish = data.get("promptFeedback", {})
+            _log(f"Sin candidates. promptFeedback={finish}")
             return {"ok": False, "_debug": f"Sin candidates. promptFeedback={json.dumps(finish)[:300]}"}
 
         candidate = candidates[0]
         content = candidate.get("content") or {}
         parts = content.get("parts") or []
         if not parts:
+            _log(f"Sin parts. finishReason={candidate.get('finishReason')}")
             return {"ok": False, "_debug": f"Sin parts. finishReason={candidate.get('finishReason')}"}
 
         raw_text = parts[0].get("text") or ""
+        _log(f"Gemini raw (200c): {raw_text[:200]}")
         if not raw_text.strip():
             return {"ok": False, "_debug": "Gemini devolvió text vacío"}
 
@@ -177,6 +192,7 @@ def extraer_entidades_gemini(texto: str, api_key: Optional[str]) -> Dict[str, An
         if not isinstance(parsed, dict):
             return {"ok": False, "_debug": f"JSON parseado no es dict: {type(parsed).__name__}"}
 
+        _log(f"Extracción OK: {len(parsed.get('receta_actual',[]))} receta, {len(parsed.get('tratamiento_cronico',[]))} crónicos, {len(parsed.get('alergias_conocidas',[]))} alergias")
         return {
             "ok": True,
             "_debug": "ok",
@@ -185,8 +201,10 @@ def extraer_entidades_gemini(texto: str, api_key: Optional[str]) -> Dict[str, An
             "alergias_conocidas": _asegurar_lista(parsed.get("alergias_conocidas"), str),
         }
     except json.JSONDecodeError as e:
-        return {"ok": False, "_debug": f"JSON inválido de Gemini: {e}. raw={raw_text[:200]}"}
+        _log(f"JSON inválido: {e}")
+        return {"ok": False, "_debug": f"JSON inválido de Gemini: {e}"}
     except Exception as e:
+        _log(f"Error: {type(e).__name__}: {e}")
         return {"ok": False, "_debug": f"{type(e).__name__}: {e}"}
 
 
