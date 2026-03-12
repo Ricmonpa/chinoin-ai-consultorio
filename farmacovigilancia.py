@@ -131,14 +131,17 @@ Texto del paciente/consulta:
 """
 
 
-def extraer_entidades_gemini(texto: str, api_key: Optional[str]) -> Optional[Dict[str, Any]]:
+def extraer_entidades_gemini(texto: str, api_key: Optional[str]) -> Dict[str, Any]:
     """
     Llama a la API de Gemini para extraer receta_actual, tratamiento_cronico y alergias_conocidas.
-    Respuesta forzada en JSON. No debe usarse para validar interacciones (solo extracción).
+    Siempre devuelve un dict con "ok" (bool) y "_debug" (str).
+    Si ok=True, incluye receta_actual, tratamiento_cronico, alergias_conocidas.
     """
-    if not api_key or not texto or not texto.strip():
-        print(f"[farmacovigilancia] Sin API key o texto vacío (key={bool(api_key)}, texto={bool(texto)})")
-        return None
+    if not api_key:
+        return {"ok": False, "_debug": "GEMINI_API_KEY no configurada en el servidor"}
+    if not texto or not texto.strip():
+        return {"ok": False, "_debug": "Texto vacío"}
+
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
     prompt = PROMPT_EXTRACCION.format(texto=texto.strip())
     payload = {
@@ -147,28 +150,24 @@ def extraer_entidades_gemini(texto: str, api_key: Optional[str]) -> Optional[Dic
     }
     try:
         r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
-        print(f"[farmacovigilancia] Gemini status: {r.status_code}")
         if r.status_code != 200:
-            print(f"[farmacovigilancia] Gemini error body: {r.text[:500]}")
-            return None
+            return {"ok": False, "_debug": f"Gemini HTTP {r.status_code}: {r.text[:300]}"}
         data = r.json()
         candidates = data.get("candidates") or []
         if not candidates:
-            print(f"[farmacovigilancia] Sin candidates en respuesta")
-            return None
+            finish = data.get("promptFeedback", {})
+            return {"ok": False, "_debug": f"Sin candidates. promptFeedback={json.dumps(finish)[:300]}"}
 
-        # Navegar estructura de Gemini de forma defensiva
         candidate = candidates[0]
         content = candidate.get("content") or {}
         parts = content.get("parts") or []
         if not parts:
-            print(f"[farmacovigilancia] Sin parts en candidate")
-            return None
+            return {"ok": False, "_debug": f"Sin parts. finishReason={candidate.get('finishReason')}"}
 
         raw_text = parts[0].get("text") or ""
-        print(f"[farmacovigilancia] Gemini raw (300c): {raw_text[:300]}")
+        if not raw_text.strip():
+            return {"ok": False, "_debug": "Gemini devolvió text vacío"}
 
-        # Limpiar posible markdown wrapping (```json ... ```)
         cleaned = raw_text.strip()
         if cleaned.startswith("```"):
             cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
@@ -176,17 +175,19 @@ def extraer_entidades_gemini(texto: str, api_key: Optional[str]) -> Optional[Dic
 
         parsed = json.loads(cleaned)
         if not isinstance(parsed, dict):
-            print(f"[farmacovigilancia] parsed no es dict: {type(parsed)}")
-            return None
+            return {"ok": False, "_debug": f"JSON parseado no es dict: {type(parsed).__name__}"}
 
         return {
+            "ok": True,
+            "_debug": "ok",
             "receta_actual": _asegurar_lista(parsed.get("receta_actual"), dict),
             "tratamiento_cronico": _asegurar_lista(parsed.get("tratamiento_cronico"), dict),
             "alergias_conocidas": _asegurar_lista(parsed.get("alergias_conocidas"), str),
         }
+    except json.JSONDecodeError as e:
+        return {"ok": False, "_debug": f"JSON inválido de Gemini: {e}. raw={raw_text[:200]}"}
     except Exception as e:
-        print(f"[farmacovigilancia] Error extracción Gemini: {type(e).__name__}: {e}")
-        return None
+        return {"ok": False, "_debug": f"{type(e).__name__}: {e}"}
 
 
 def _asegurar_lista(val, tipo_elemento):
@@ -330,12 +331,18 @@ def ejecutar_validacion_completa(texto: str, api_key: Optional[str]) -> Dict[str
         "entidades_extraidas": {"receta_actual": [], "tratamiento_cronico": [], "alergias_conocidas": []},
     }
     try:
-        entidades = extraer_entidades_gemini(texto, api_key)
-        if entidades is None:
+        resultado_gemini = extraer_entidades_gemini(texto, api_key)
+        debug_msg = resultado_gemini.get("_debug", "")
+        if not resultado_gemini.get("ok"):
             _empty["mensaje"] = "No fue posible extraer entidades del texto. Revise el contenido o intente de nuevo."
             _empty["error_extraccion"] = True
+            _empty["_debug"] = debug_msg
             return _empty
-        return validar_farmacovigilancia(entidades)
+        resultado_gemini.pop("ok", None)
+        resultado_gemini.pop("_debug", None)
+        result = validar_farmacovigilancia(resultado_gemini)
+        result["_debug"] = debug_msg
+        return result
     except Exception as e:
         import traceback
         traceback.print_exc()
