@@ -26,6 +26,7 @@ from seguro_ocr import extraer_datos_credencial_imagen, consultar_info_plan
 from seguro_rag import buscar_honorario_en_tabulador, consultar_cobertura_procedimiento
 from seguro_informe import generar_informe_medico, generar_informe_generico
 from seguro_pdf import procesar_tabulador_pdf
+from farmacovigilancia import ejecutar_validacion_completa
 from dotenv import load_dotenv
 
 # Cargar variables de entorno
@@ -210,6 +211,13 @@ def dashboard():
 @app.route('/transcripcion')
 def vista_transcripcion():
     return render_template('transcripcion.html')
+
+
+@app.route('/farmacovigilancia')
+def vista_farmacovigilancia():
+    """Vista del módulo Farmacovigilancia (DDI): validación receta vs interacciones/alergias."""
+    return render_template('farmacovigilancia.html')
+
 
 @app.route('/procesar_consulta', methods=['POST'])
 def procesar_consulta():
@@ -716,6 +724,35 @@ Responde en formato JSON con esta estructura:
             "debug_log": debug_log,
             "raw_response": soap_response_text
         }), 500
+
+
+@app.route('/api/validar_farmacovigilancia', methods=['POST'])
+def api_validar_farmacovigilancia():
+    """
+    Farmacovigilancia y seguridad clínica (DDI).
+    Recibe texto de receta o nota SOAP; extrae entidades con Gemini (solo orquestador)
+    y cruza contra fuente de verdad (mock/DB). CERO alucinaciones: la IA no inventa interacciones.
+    """
+    if not request.json:
+        return jsonify({"error": "No se recibió JSON"}), 400
+    texto = request.json.get("texto") or request.json.get("transcripcion") or ""
+    if not texto or not str(texto).strip():
+        return jsonify({"error": "Se requiere 'texto' o 'transcripcion' con contenido"}), 400
+    try:
+        resultado = ejecutar_validacion_completa(str(texto).strip(), GEMINI_API_KEY)
+        return jsonify(resultado)
+    except Exception as e:
+        print(f"[validar_farmacovigilancia] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "nivel": "VERDE",
+            "mensaje": "Error interno al validar. Revise logs.",
+            "detalles": [],
+            "entidades_extraidas": {"receta_actual": [], "tratamiento_cronico": [], "alergias_conocidas": []},
+            "error": str(e),
+        }), 500
+
 
 @app.route('/contador')
 def vista_contador():
