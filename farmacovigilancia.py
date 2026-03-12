@@ -137,7 +137,7 @@ def extraer_entidades_gemini(texto: str, api_key: Optional[str]) -> Optional[Dic
     Respuesta forzada en JSON. No debe usarse para validar interacciones (solo extracción).
     """
     if not api_key or not texto or not texto.strip():
-        print("[farmacovigilancia] Sin API key o texto vacío")
+        print(f"[farmacovigilancia] Sin API key o texto vacío (key={bool(api_key)}, texto={bool(texto)})")
         return None
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
     prompt = PROMPT_EXTRACCION.format(texto=texto.strip())
