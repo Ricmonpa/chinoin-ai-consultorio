@@ -112,17 +112,17 @@ Reglas estrictas:
 - Nombres de medicamentos: usa el nombre genérico o el que aparezca en el texto (minúsculas, sin inventar).
 
 Devuelve ÚNICAMENTE un JSON válido con esta estructura exacta (sin markdown, sin comentarios):
-{
+{{
   "receta_actual": [
-    {"nombre": "nombre del medicamento", "dosis": "dosis si se menciona o vacío", "via": "oral/iv/im/tópica/etc o vacío"}
+    {{"nombre": "nombre del medicamento", "dosis": "dosis si se menciona o vacío", "via": "oral/iv/im/tópica/etc o vacío"}}
   ],
   "tratamiento_cronico": [
-    {"nombre": "nombre del medicamento"}
+    {{"nombre": "nombre del medicamento"}}
   ],
   "alergias_conocidas": [
     "sustancia o familia (ej: Sulfas, Penicilina)"
   ]
-}
+}}
 
 Texto del paciente/consulta:
 ---
@@ -341,5 +341,4 @@ def ejecutar_validacion_completa(texto: str, api_key: Optional[str]) -> Dict[str
         traceback.print_exc()
         _empty["mensaje"] = f"Error interno en validación: {type(e).__name__}: {e}"
         _empty["error_interno"] = True
-        _empty["debug_error"] = traceback.format_exc()
         return _empty
