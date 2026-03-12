@@ -337,7 +337,9 @@ def ejecutar_validacion_completa(texto: str, api_key: Optional[str]) -> Dict[str
             return _empty
         return validar_farmacovigilancia(entidades)
     except Exception as e:
-        print(f"[farmacovigilancia] Error en validación completa: {type(e).__name__}: {e}")
-        _empty["mensaje"] = f"Error interno en validación: {type(e).__name__}"
+        import traceback
+        traceback.print_exc()
+        _empty["mensaje"] = f"Error interno en validación: {type(e).__name__}: {e}"
         _empty["error_interno"] = True
+        _empty["debug_error"] = traceback.format_exc()
         return _empty
